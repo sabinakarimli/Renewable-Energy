@@ -14,7 +14,6 @@ async def main(page: ft.Page):
 
     init_db()
 
-    # ── Layout wrapper (Sidebar + Header) ─────────────────────────────
     def get_sidebar_view(route, content_widget):
         from components.sidebar import Sidebar
         from components.header import Header
@@ -47,7 +46,6 @@ async def main(page: ft.Page):
             ],
         )
 
-    # ── Coming Soon Page ──────────────────────────────────────────────
     def coming_soon(title):
         return ft.Container(
             expand=True,
@@ -57,36 +55,19 @@ async def main(page: ft.Page):
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Container(
-                        width=80,
-                        height=80,
-                        border_radius=40,
-                        bgcolor="#0a1628",
-                        border=ft.border.all(1, "#0d2235"),
-                        content=ft.Icon(
-                            ft.Icons.CONSTRUCTION,
-                            size=40,
-                            color="#00C896",
-                        ),
+                        width=80, height=80, border_radius=40,
+                        bgcolor="#0a1628", border=ft.border.all(1, "#0d2235"),
+                        content=ft.Icon(ft.Icons.CONSTRUCTION, size=40, color="#00C896"),
                         alignment=ft.Alignment(0, 0),
                     ),
                     ft.Container(height=20),
-                    ft.Text(
-                        title,
-                        size=24,
-                        color="#F9FAFB",
-                        weight=ft.FontWeight.BOLD,
-                    ),
+                    ft.Text(title, size=24, color="#F9FAFB", weight=ft.FontWeight.BOLD),
                     ft.Container(height=8),
-                    ft.Text(
-                        "This page is coming soon...",
-                        size=14,
-                        color="#4B5563",
-                    ),
+                    ft.Text("This page is coming soon...", size=14, color="#4B5563"),
                 ],
             ),
         )
 
-    # ── Routing ───────────────────────────────────────────────────────
     def route_change(e):
         page.views.clear()
         route = page.route
@@ -101,7 +82,6 @@ async def main(page: ft.Page):
             asyncio.create_task(page.push_route("/login"))
             return
 
-        # ── Public Routes ──
         if route in ("/", "/login"):
             from views.login import LoginView
             page.views.append(LoginView(page, user_data))
@@ -114,7 +94,6 @@ async def main(page: ft.Page):
             from views.forgot_password import ForgotView
             page.views.append(ForgotView(page))
 
-        # ── Protected Routes ──
         elif route == "/dashboard":
             from views.dashboard import DashboardView
             page.views.append(ft.View(route=route))
@@ -175,7 +154,6 @@ async def main(page: ft.Page):
 
         page.update()
 
-    # ── Back navigation ───────────────────────────────────────────────
     async def view_pop(e):
         page.views.pop()
         if page.views:
@@ -184,11 +162,9 @@ async def main(page: ft.Page):
     page.on_route_change = route_change
     page.on_view_pop = view_pop
 
-    # default route - set initial route and call handler directly
     page.route = "/login"
     route_change(None)
 
 
-# ── App start ────────────────────────────────────────────────────────
 if __name__ == "__main__":
     ft.run(main)
