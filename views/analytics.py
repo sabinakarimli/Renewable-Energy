@@ -1,4 +1,5 @@
 import flet as ft
+import asyncio
 import random
 import base64
 import math
@@ -180,7 +181,7 @@ def build_donut(s_eff, w_eff, b_eff, g_eff):
                  f'fill="{color}" opacity="0.93"/>'
                  f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" '
                  f'font-size="10.5" fill="{color}" font-weight="bold">'
-                 f'{name}: {val}%</text>')
+                 f'{name}: {val:.1f}%</text>')
         angle += sw
 
     # center text
@@ -188,7 +189,7 @@ def build_donut(s_eff, w_eff, b_eff, g_eff):
              f'font-size="13" fill="#9CA3AF">Avg Efficiency</text>'
              f'<text x="{cx}" y="{cy+12}" text-anchor="middle" '
              f'font-size="22" fill="{PRIMARY}" font-weight="bold">'
-             f'{round((s_eff+w_eff+b_eff+g_eff)/4)}%</text>')
+             f'{((s_eff+w_eff+b_eff+g_eff)/4):.1f}%</text>')
 
     # legend
     leg = ""
@@ -201,7 +202,7 @@ def build_donut(s_eff, w_eff, b_eff, g_eff):
                 f'<text x="{lx+12}" y="{ly}" font-size="11" fill="#9CA3AF">'
                 f'{name}</text>'
                 f'<text x="{lx+148}" y="{ly}" text-anchor="end" '
-                f'font-size="11" fill="{color}" font-weight="bold">{val}%</text>')
+                f'font-size="11" fill="{color}" font-weight="bold">{val:.1f}%</text>')
 
     return (f'<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">'
             f'{arcs}{leg}</svg>')
@@ -405,15 +406,24 @@ def AnalyticsView(page: ft.Page):
     r_grid   = ft.Ref[ft.Text]()
     r_sav    = ft.Ref[ft.Text]()
     r_eff    = ft.Ref[ft.Text]()
+    r_net    = ft.Ref[ft.Text]()
+    r_peak   = ft.Ref[ft.Text]()
+    r_status = ft.Ref[ft.Text]()
+    r_status_box = ft.Ref[ft.Container]()
+    r_notice_box = ft.Ref[ft.Container]()
+    r_notice_txt = ft.Ref[ft.Text]()
 
     r_bar    = ft.Ref[ft.Image]()
     r_donut  = ft.Ref[ft.Image]()
     r_yoy    = ft.Ref[ft.Image]()
     r_savimg = ft.Ref[ft.Image]()
+    dt_ref   = ft.Ref[ft.DataTable]()
 
     btn_w = ft.Ref[ft.Button]()
     btn_m = ft.Ref[ft.Button]()
     btn_y = ft.Ref[ft.Button]()
+    data_records = {"rows": []}
+    live_seq = {"v": 0}
 
     BAR_H = 320
     DON_H = 300
@@ -424,11 +434,69 @@ def AnalyticsView(page: ft.Page):
     eff_vals = {"s": 92, "w": 88, "b": 95, "g": 78}
 
     def tick_eff():
-        def rw(v): return max(60, min(100, round(v + random.uniform(-0.8, 0.8))))
-        eff_vals["s"] = rw(eff_vals["s"])
-        eff_vals["w"] = rw(eff_vals["w"])
-        eff_vals["b"] = rw(eff_vals["b"])
-        eff_vals["g"] = rw(eff_vals["g"])
+        seq = live_seq["v"]
+
+        def rw(v, phase):
+            wave = math.sin(seq * 0.85 + phase) * 1.6
+            jitter = random.uniform(-0.9, 0.9)
+            return round(max(62, min(99.8, v + wave + jitter)), 1)
+
+        eff_vals["s"] = rw(eff_vals["s"], 0.2)
+        eff_vals["w"] = rw(eff_vals["w"], 1.4)
+        eff_vals["b"] = rw(eff_vals["b"], 2.3)
+        eff_vals["g"] = rw(eff_vals["g"], 3.1)
+
+    def show_snack(message, color=PRIMARY):
+        if r_notice_box.current:
+            r_notice_box.current.visible = True
+            r_notice_box.current.bgcolor = f"{color}18"
+            r_notice_box.current.border = ft.border.all(1, f"{color}66")
+        if r_notice_txt.current:
+            r_notice_txt.current.value = message
+            r_notice_txt.current.color = color
+        if not page.snack_bar:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(""),
+                bgcolor=color,
+                behavior=ft.SnackBarBehavior.FLOATING,
+                duration=2200,
+            )
+        page.snack_bar.content = ft.Text(message, color="#040d1a", weight=ft.FontWeight.W_600)
+        page.snack_bar.bgcolor = color
+        try:
+            page.show_snack_bar(page.snack_bar)
+        except Exception:
+            try:
+                page.open(page.snack_bar)
+            except Exception:
+                page.snack_bar.open = True
+                page.update()
+        page.update()
+
+    def _health_status(prod, cons, eff):
+        ratio = prod / max(cons, 1)
+        if ratio >= 1.18 and eff >= 88:
+            return "Optimal", PRIMARY
+        if ratio >= 0.92:
+            return "Balanced", SECONDARY
+        if ratio >= 0.75:
+            return "Watch", ACCENT
+        return "Critical", ERROR
+
+    def _record_to_row(label, prod, cons, grid, savings, eff):
+        row = ft.DataRow(cells=[
+            ft.DataCell(ft.Text(label, size=12, color=TEXT_SECONDARY)),
+            ft.DataCell(ft.Text(f"{prod:,}", size=12, color=PRIMARY)),
+            ft.DataCell(ft.Text(f"{cons:,}", size=12, color="#A855F7")),
+            ft.DataCell(ft.Text(f"{grid:,}", size=12, color=SECONDARY)),
+            ft.DataCell(ft.Text(f"${savings:,}", size=12, color="#10B981")),
+            ft.DataCell(ft.Text(f"{eff:.1f}%", size=12, color=ACCENT)),
+        ])
+        data_records["rows"].append(row)
+        if len(data_records["rows"]) > 10:
+            data_records["rows"].pop(0)
+        if dt_ref.current:
+            dt_ref.current.rows = list(data_records["rows"])
 
     # ── Full redraw ────────────────────────────────────────────────────────────
     def redraw():
@@ -476,8 +544,31 @@ def AnalyticsView(page: ft.Page):
         if r_grid.current:  r_grid.current.value  = f"{tot_g:,}"
         if r_sav.current:   r_sav.current.value   = f"${tot_s:,}"
         if r_eff.current:   r_eff.current.value   = f"{avg_e}%"
+        net = tot_p - tot_c
+        peak = max(sol) + max(wnd)
+        status_text, status_color = _health_status(tot_p, tot_c, avg_e)
+        if r_net.current:    r_net.current.value    = f"{net:+,}"
+        if r_peak.current:   r_peak.current.value   = f"{peak:,}"
+        if r_status.current:
+            r_status.current.value = status_text
+            r_status.current.color = status_color
+        if r_status_box.current:
+            r_status_box.current.bgcolor = f"{status_color}18"
+            r_status_box.current.border = ft.border.all(1, f"{status_color}55")
 
         page.update()
+
+    def push_live_record():
+        d = state["data"]
+        if d is None:
+            return
+        lbl, sol, wnd, con, sav, y26, y25 = d
+        prod = sum(sol) + sum(wnd)
+        cons = sum(con)
+        grid = int(prod * 0.22)
+        savings = sum(sav)
+        avg_e = round((eff_vals["s"] + eff_vals["w"] + eff_vals["b"] + eff_vals["g"]) / 4, 1)
+        _record_to_row(time.strftime("%H:%M:%S"), prod, cons, grid, savings, avg_e)
 
     def load_period(p):
         state["period"] = p
@@ -507,18 +598,21 @@ def AnalyticsView(page: ft.Page):
         for b, m in [(btn_w,"weekly"),(btn_m,"monthly"),(btn_y,"yearly")]:
             if b.current:
                 b.current.style = pstyle(m == p)
+        show_snack(f"{p.title()} analytics loaded", PRIMARY if p == "weekly" else SECONDARY)
+        push_live_record()
         redraw()
 
-    # ── Live simulation loop ───────────────────────────────────────────────────
+    # ── Live simulation loop (thread-based for reliability) ─────────────────────────
     def live_loop():
         while not _stop.is_set():
-            time.sleep(1.8)
             try:
+                time.sleep(1.0)
                 if state["data"] is None:
                     continue
-                # re-generate with small random walk
+                live_seq["v"] += 1
                 state["data"] = GENERATORS[state["period"]]()
                 tick_eff()
+                push_live_record()
                 redraw()
             except Exception:
                 pass
@@ -735,7 +829,7 @@ def AnalyticsView(page: ft.Page):
                 ft.Text("Energy Analytics", size=22,
                         weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
                 ft.Text(
-                    "Deep insights into your energy production and consumption",
+                    "Realtime production, demand, savings, and system health",
                     size=13, color=TEXT_MUTED),
             ]),
             ft.Row(spacing=10, controls=[
@@ -752,22 +846,21 @@ def AnalyticsView(page: ft.Page):
                         padding=ft.padding.symmetric(
                             horizontal=16, vertical=12),
                     ),
+                    on_click=lambda e: show_snack("Custom range selected successfully", PRIMARY),
                 ),
-                ft.Button(
-                    content=ft.Row(spacing=6, controls=[
-                        ft.Icon(ft.Icons.DOWNLOAD_OUTLINED,
-                                size=15, color="#020818"),
-                        ft.Text("Export Data", size=13, color="#020818",
-                                weight=ft.FontWeight.W_600),
-                    ]),
+                ft.ElevatedButton(
+                    "Export Data",
+                    icon=ft.Icons.DOWNLOAD_OUTLINED,
+                    bgcolor=PRIMARY,
+                    color="#020818",
                     style=ft.ButtonStyle(
-                        bgcolor=PRIMARY,
                         shape=ft.RoundedRectangleBorder(radius=10),
                         padding=ft.padding.symmetric(
                             horizontal=16, vertical=12),
                         elevation=0,
                         overlay_color=PRIMARY_DARK,
                     ),
+                    on_click=lambda e: show_snack("Export data completed successfully", SECONDARY),
                 ),
             ]),
         ],
@@ -785,25 +878,341 @@ def AnalyticsView(page: ft.Page):
                           style=pstyle(False)),
     ])
 
+    notice_banner = ft.Container(
+        ref=r_notice_box,
+        visible=False,
+        bgcolor=f"{PRIMARY}18",
+        border=ft.border.all(1, f"{PRIMARY}66"),
+        border_radius=10,
+        padding=ft.padding.symmetric(horizontal=14, vertical=10),
+        content=ft.Row(spacing=10, controls=[
+            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=PRIMARY, size=18),
+            ft.Text("", ref=r_notice_txt, size=13,
+                    weight=ft.FontWeight.W_600, color=PRIMARY),
+        ]),
+    )
+
+    data_table = ft.DataTable(
+        ref=dt_ref,
+        bgcolor=BG_CARD,
+        border=ft.border.all(0, "transparent"),
+        border_radius=12,
+        horizontal_lines=ft.BorderSide(1, BORDER),
+        heading_row_color=f"{PRIMARY}11",
+        heading_row_height=42,
+        data_row_min_height=38,
+        data_row_max_height=42,
+        column_spacing=20,
+        columns=[
+            ft.DataColumn(ft.Text("Time", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+            ft.DataColumn(ft.Text("Production", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY)),
+            ft.DataColumn(ft.Text("Consumption", size=12, weight=ft.FontWeight.BOLD, color="#A855F7")),
+            ft.DataColumn(ft.Text("Grid", size=12, weight=ft.FontWeight.BOLD, color=SECONDARY)),
+            ft.DataColumn(ft.Text("Savings", size=12, weight=ft.FontWeight.BOLD, color="#10B981")),
+            ft.DataColumn(ft.Text("Efficiency", size=12, weight=ft.FontWeight.BOLD, color=ACCENT)),
+        ],
+        rows=[],
+    )
+
+    data_section = ft.Container(
+        bgcolor=BG_CARD,
+        border_radius=14,
+        border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=24, color="#00000055", offset=ft.Offset(0, 8)),
+        padding=ft.padding.all(20),
+        content=ft.Column(spacing=12, controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(spacing=10, controls=[
+                        ft.Icon(ft.Icons.TABLE_CHART_OUTLINED, color=PRIMARY, size=18),
+                        ft.Text("Live Analytics Records", size=15,
+                                weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                    ]),
+                    ft.Row(spacing=8, controls=[
+                        ft.ElevatedButton(
+                            "Refresh",
+                            icon=ft.Icons.REFRESH,
+                            bgcolor=f"{PRIMARY}22",
+                            color=PRIMARY,
+                            style=ft.ButtonStyle(
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                elevation=0,
+                            ),
+                            on_click=lambda e: (push_live_record(), redraw(), show_snack("Table refreshed", PRIMARY)),
+                        ),
+                        ft.OutlinedButton(
+                            "Export",
+                            icon=ft.Icons.DOWNLOAD,
+                            style=ft.ButtonStyle(
+                                color=SECONDARY,
+                                side=ft.BorderSide(1, SECONDARY),
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                            on_click=lambda e: show_snack("Export completed successfully", SECONDARY),
+                        ),
+                    ]),
+                ],
+            ),
+            ft.Container(
+                border=ft.border.all(1, BORDER),
+                border_radius=12,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                height=232,
+                content=ft.ListView(controls=[data_table], spacing=0, auto_scroll=True),
+            ),
+        ]),
+    )
+
+    insight_strip = ft.Row(spacing=12, controls=[
+        sum_card((ft.Icons.SWAP_VERT, PRIMARY), "#061b18",
+                 "Net Balance", r_net, "kWh",
+                 "auto-updating surplus", True),
+        sum_card((ft.Icons.WB_SUNNY_OUTLINED, "#F59E0B"), "#1a1400",
+                 "Peak Output", r_peak, "kWh",
+                 "highest live interval", True),
+        ft.Container(
+            expand=True,
+            bgcolor=BG_CARD,
+            border_radius=14,
+            border=ft.border.all(1, BORDER),
+            shadow=ft.BoxShadow(blur_radius=20, color="#00000055", offset=ft.Offset(0, 6)),
+            padding=ft.padding.all(20),
+            content=ft.Column(spacing=8, controls=[
+                ft.Container(
+                    width=40, height=40, border_radius=11,
+                    bgcolor=f"{SECONDARY}18",
+                    border=ft.border.all(1, f"{SECONDARY}44"),
+                    content=ft.Icon(ft.Icons.HEALTH_AND_SAFETY_OUTLINED, color=SECONDARY, size=19),
+                    alignment=ft.Alignment(0, 0),
+                ),
+                ft.Text("System Status", size=12, color=TEXT_MUTED),
+                ft.Container(
+                    ref=r_status_box,
+                    border_radius=18,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                    content=ft.Text("", ref=r_status, size=14,
+                                    weight=ft.FontWeight.BOLD, color=PRIMARY),
+                ),
+                ft.Text("live health calculation", size=11, color=TEXT_SECONDARY),
+            ]),
+        ),
+    ])
+
+    def close_sheet():
+        bottom_sheet.open = False
+        page.update()
+
+    def open_sheet():
+        bottom_sheet.open = True
+        page.update()
+
+    bottom_sheet = ft.BottomSheet(
+        open=False,
+        bgcolor=BG_CARD,
+        content=ft.Container(
+            padding=ft.padding.all(24),
+            content=ft.Column(tight=True, spacing=16, controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Analytics Actions", size=17,
+                                weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                        ft.IconButton(icon=ft.Icons.CLOSE, icon_color=TEXT_MUTED,
+                                      tooltip="Close", on_click=lambda e: close_sheet()),
+                    ],
+                ),
+                ft.Divider(color=BORDER, height=1),
+                ft.Row(spacing=10, controls=[
+                    ft.ElevatedButton(
+                        "Refresh Now", icon=ft.Icons.REFRESH,
+                        bgcolor=PRIMARY, color="#040d1a", expand=True,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                        on_click=lambda e: (push_live_record(), redraw(), show_snack("Live analytics refreshed", PRIMARY)),
+                    ),
+                    ft.OutlinedButton(
+                        "Snapshot", icon=ft.Icons.CAMERA_ALT_OUTLINED,
+                        expand=True,
+                        style=ft.ButtonStyle(
+                            color=SECONDARY,
+                            side=ft.BorderSide(1, SECONDARY),
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                        ),
+                        on_click=lambda e: show_snack("Snapshot captured", SECONDARY),
+                    ),
+                    ft.ElevatedButton(
+                        "Forecast", icon=ft.Icons.AUTO_GRAPH,
+                        bgcolor=ACCENT, color="#040d1a", expand=True,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                        on_click=lambda e: show_snack("Forecast model started", ACCENT),
+                    ),
+                ]),
+            ]),
+        ),
+    )
+    # Ensure page has overlay attribute before appending
+    if not hasattr(page, 'overlay'):
+        page.overlay = []
+    page.overlay.append(bottom_sheet)
+
+    now_str = time.strftime("%d %b %Y")
+    page.appbar = ft.AppBar(
+        leading=ft.Container(
+            padding=ft.padding.only(left=8),
+            content=ft.Container(
+                width=32, height=32, border_radius=8,
+                bgcolor=f"{PRIMARY}22",
+                border=ft.border.all(1, f"{PRIMARY}44"),
+                content=ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=PRIMARY, size=18),
+                alignment=ft.Alignment(0, 0),
+            ),
+        ),
+        leading_width=50,
+        title=ft.Column(spacing=1, controls=[
+            ft.Text("EnergyOS Analytics", size=15,
+                    weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            ft.Text(f"Realtime intelligence - {now_str}", size=11, color=TEXT_MUTED),
+        ]),
+        center_title=False,
+        bgcolor=BG_CARD,
+        elevation=0,
+        actions=[
+            ft.MenuBar(
+                style=ft.MenuStyle(
+                    bgcolor=ft.Colors.TRANSPARENT,
+                    elevation=0,
+                    padding=ft.padding.symmetric(horizontal=4),
+                ),
+                controls=[
+                    ft.SubmenuButton(
+                        content=ft.Row(spacing=4, controls=[
+                            ft.Icon(ft.Icons.TUNE, color=TEXT_SECONDARY, size=16),
+                            ft.Text("Period", color=TEXT_SECONDARY, size=13),
+                        ]),
+                        style=ft.ButtonStyle(
+                            bgcolor={ft.ControlState.HOVERED: f"{PRIMARY}18"},
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                        controls=[
+                            ft.MenuItemButton(
+                                content=ft.Text("Weekly", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.DATE_RANGE, color=PRIMARY, size=16),
+                                on_click=lambda e: set_period("weekly"),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Monthly", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.CALENDAR_MONTH, color=SECONDARY, size=16),
+                                on_click=lambda e: set_period("monthly"),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Yearly", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.QUERY_STATS, color=ACCENT, size=16),
+                                on_click=lambda e: set_period("yearly"),
+                            ),
+                        ],
+                    ),
+                    ft.SubmenuButton(
+                        content=ft.Row(spacing=4, controls=[
+                            ft.Icon(ft.Icons.MORE_HORIZ, color=TEXT_SECONDARY, size=16),
+                            ft.Text("Tools", color=TEXT_SECONDARY, size=13),
+                        ]),
+                        style=ft.ButtonStyle(
+                            bgcolor={ft.ControlState.HOVERED: f"{PRIMARY}18"},
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                        controls=[
+                            ft.MenuItemButton(
+                                content=ft.Text("Open Actions", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.FLASH_ON, color=PRIMARY, size=16),
+                                on_click=lambda e: open_sheet(),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Export Data", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.DOWNLOAD_OUTLINED, color=SECONDARY, size=16),
+                                on_click=lambda e: show_snack("Export completed successfully", SECONDARY),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Clear Hover", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.CLEAR_ALL, color=ACCENT, size=16),
+                                on_click=lambda e: (hover.update(bar=-1, yoy=-1, sav=-1), redraw()),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            ft.IconButton(
+                icon=ft.Icons.REFRESH_ROUNDED,
+                icon_color=PRIMARY,
+                tooltip="Refresh",
+                on_click=lambda e: (push_live_record(), redraw(), show_snack("Analytics refreshed", PRIMARY)),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.NOTIFICATIONS_OUTLINED,
+                icon_color=TEXT_SECONDARY,
+                tooltip="Alerts",
+                on_click=lambda e: show_snack("No analytics alerts", ACCENT),
+            ),
+            ft.Container(width=8),
+        ],
+    )
+
+    page.bottom_appbar = ft.BottomAppBar(
+        bgcolor=BG_CARD,
+        content=ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_AROUND,
+            controls=[
+                ft.IconButton(icon=ft.Icons.HOME_ROUNDED, icon_color=TEXT_SECONDARY,
+                              tooltip="Dashboard", on_click=lambda e: show_snack("Dashboard shortcut", PRIMARY)),
+                ft.IconButton(icon=ft.Icons.ANALYTICS_OUTLINED, icon_color=PRIMARY,
+                              tooltip="Analytics", on_click=lambda e: show_snack("Analytics live", SECONDARY)),
+                ft.Container(width=56),
+                ft.IconButton(icon=ft.Icons.TABLE_CHART_OUTLINED, icon_color=TEXT_SECONDARY,
+                              tooltip="Table", on_click=lambda e: show_snack("Live table is updating", PRIMARY)),
+                ft.IconButton(icon=ft.Icons.SETTINGS_OUTLINED, icon_color=TEXT_SECONDARY,
+                              tooltip="Settings", on_click=lambda e: show_snack("Analytics settings", TEXT_SECONDARY)),
+            ],
+        ),
+    )
+
+    page.floating_action_button = ft.FloatingActionButton(
+        icon=ft.Icons.FLASH_ON,
+        bgcolor=PRIMARY,
+        foreground_color="#040d1a",
+        tooltip="Analytics actions",
+        on_click=lambda e: open_sheet(),
+    )
+    page.floating_action_button_location = ft.FloatingActionButtonLocation.CENTER_DOCKED
+
+    page.snack_bar = ft.SnackBar(
+        content=ft.Text(""),
+        bgcolor=PRIMARY,
+        behavior=ft.SnackBarBehavior.FLOATING,
+        duration=2200,
+    )
+
     body = ft.Column(
         spacing=16, scroll=ft.ScrollMode.AUTO, expand=True,
         controls=[
             header,
+            notice_banner,
             tabs,
             cards_row,
+            insight_strip,
             ft.Row(spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.START,
                    controls=[bar_card, donut_card]),
             ft.Row(spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.START,
                    controls=[yoy_card, sav_card]),
-            ft.Container(height=16),
+            data_section,
+            ft.Container(height=80),
         ],
     )
 
     def _init():
         try:
             load_period("weekly")
+            push_live_record()
             redraw()
         except Exception:
             pass

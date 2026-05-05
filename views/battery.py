@@ -192,17 +192,21 @@ def _build_line_chart_svg(series, width=860, height=220, y_axis_steps=4):
     def y_pos(v):
         return PT + (1 - (v - y_min) / (y_max - y_min)) * (height - PT - PB)
 
+    # Enhanced grid with animated effects
     grid = ""
     for k in range(y_axis_steps + 1):
         y = PT + k * (height - PT - PB) / y_axis_steps
         value = round(y_max - (y_max - y_min) * k / y_axis_steps)
         grid += (
             f'<line x1="{PL}" y1="{y:.1f}" x2="{width-PR}" y2="{y:.1f}" '
-            f'stroke="#0a1628" stroke-width="1" stroke-dasharray="4,4"/>'
+            f'stroke="#2D3561" stroke-width="1" stroke-dasharray="5,3" opacity="0.6">'
+            f'<animate attributeName="opacity" values="0.6;0.3;0.6" dur="3s" repeatCount="indefinite" begin="{k*0.2}s"/>'
+            f'</line>'
             f'<text x="{PL-8:.0f}" y="{y+4:.0f}" text-anchor="end" '
-            f'font-size="10" fill="#6B7280">{value}</text>'
+            f'font-size="10" fill="#B8BCC8" font-weight="500">{value}</text>'
         )
 
+    # Enhanced x-axis labels
     xlabels = ""
     step = max(1, n // 6)
     for i in range(0, n, step):
@@ -210,40 +214,105 @@ def _build_line_chart_svg(series, width=860, height=220, y_axis_steps=4):
         label = str(i) if n <= 12 else f"-{n-i}s"
         xlabels += (
             f'<text x="{x:.0f}" y="{height-8}" text-anchor="middle" '
-            f'font-size="10" fill="#6B7280">{label}</text>'
+            f'font-size="10" fill="#B8BCC8" font-weight="500">{label}</text>'
         )
 
     lines = ""
     dots = ""
+    glow_effects = ""
+    
     for serie in series:
         points = [(x_pos(i), y_pos(v)) for i, v in enumerate(serie["values"])]
         if len(points) < 2:
             points = points + [(points[0][0] + 1, points[0][1])] if points else [(PL, y_pos(0)), (PL + 1, y_pos(0))]
         polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
         fill_color = serie.get("fill", serie["color"])
+        
+        # Enhanced area fill with gradient
         lines += (
             f'<path d="M{points[0][0]:.1f},{points[0][1]:.1f} ' +
             " ".join(f'L{x:.1f},{y:.1f}' for x, y in points) +
             f' L{points[-1][0]:.1f},{height-PB} L{points[0][0]:.1f},{height-PB} Z" '
-            f'fill="{fill_color}" opacity="0.28"/>'
+            f'fill="{fill_color}" opacity="0.35"/>'
         )
+        
+        # Enhanced line with better stroke
+        stroke_width = serie.get("stroke_width", 3)
         lines += (
             f'<polyline points="{polyline}" fill="none" stroke="{serie["color"]}" '
-            f'stroke-width="{serie.get("stroke_width", 2)}" stroke-linecap="round" stroke-linejoin="round"'
-            + (f' stroke-dasharray="6,4"' if serie.get("dash") else '') + '/>'
+            f'stroke-width="{stroke_width}" stroke-linecap="round" stroke-linejoin="round"'
+            + (f' stroke-dasharray="8,4"' if serie.get("dash") else '') + '/>'
         )
-        for x, y in points:
+        
+        # Ultra impressive animated dots with multiple effects
+        for i, (x, y) in enumerate(points):
+            # Main animated dots with enhanced effects
             dots += (
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{serie["color"]}" '
-                f'stroke="#0b1520" stroke-width="1"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5" fill="{serie["color"]}" '
+                f'stroke="#1A1F3A" stroke-width="2">'
+                f'<animate attributeName="r" values="5;8;5" dur="2s" repeatCount="indefinite" begin="{i*0.1}s"/>'
+                f'<animate attributeName="opacity" values="0.9;1;0.9" dur="2s" repeatCount="indefinite" begin="{i*0.1}s"/>'
+                f'<animate attributeName="stroke-width" values="2;3;2" dur="2s" repeatCount="indefinite" begin="{i*0.1}s"/>'
+                f'</circle>'
+            )
+            
+            # Multiple glow layers for impressive effect
+            color = serie["color"]
+            
+            # Outer glow layer
+            glow_effects += (
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="12" fill="{color}" opacity="0.2">'
+                f'<animate attributeName="r" values="12;18;12" dur="3s" repeatCount="indefinite" begin="{i*0.1}s"/>'
+                f'<animate attributeName="opacity" values="0.2;0.05;0.2" dur="3s" repeatCount="indefinite" begin="{i*0.1}s"/>'
+                f'</circle>'
+            )
+            
+            # Middle glow layer
+            glow_effects += (
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="8" fill="{color}" opacity="0.4">'
+                f'<animate attributeName="r" values="8;14;8" dur="2.5s" repeatCount="indefinite" begin="{i*0.15}s"/>'
+                f'<animate attributeName="opacity" values="0.4;0.1;0.4" dur="2.5s" repeatCount="indefinite" begin="{i*0.15}s"/>'
+                f'</circle>'
+            )
+            
+            # Inner glow layer
+            glow_effects += (
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{color}" opacity="0.6">'
+                f'<animate attributeName="r" values="4;7;4" dur="1.5s" repeatCount="indefinite" begin="{i*0.2}s"/>'
+                f'<animate attributeName="opacity" values="0.6;0.2;0.6" dur="1.5s" repeatCount="indefinite" begin="{i*0.2}s"/>'
+                f'</circle>'
             )
 
+    # Ultra impressive background with animated gradient
+    animated_bg = (
+        f'<defs>'
+        f'<linearGradient id="animatedBg" x1="0%" y1="0%" x2="100%" y2="100%">'
+        f'<stop offset="0%" stop-color="#1A1F3A">'
+        f'<animate attributeName="stop-color" values="#1A1F3A;#2D3561;#1A1F3A" dur="4s" repeatCount="indefinite"/>'
+        f'</stop>'
+        f'<stop offset="100%" stop-color="#0A1628">'
+        f'<animate attributeName="stop-color" values="#0A1628;#1A1F3A;#0A1628" dur="4s" repeatCount="indefinite"/>'
+        f'</stop>'
+        f'</linearGradient>'
+        f'<filter id="chartGlow">'
+        f'<feGaussianBlur stdDeviation="3" result="coloredBlur"/>'
+        f'<feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        f'</filter>'
+        f'</defs>'
+    )
+    
+    # Enhanced background and borders with glow effects
     inner = (
-        f'<rect x="0" y="0" width="{width}" height="{height}" fill="transparent"/>'
+        f'{animated_bg}'
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="url(#animatedBg)" rx="8" filter="url(#chartGlow)"/>'
         f'{grid}'
-        f'<line x1="{PL}" y1="{PT}" x2="{PL}" y2="{height-PB}" stroke="#0e1b2d" stroke-width="1"/>'
-        f'<line x1="{PL}" y1="{height-PB}" x2="{width-PR}" y2="{height-PB}" stroke="#0e1b2d" stroke-width="1"/>'
-        f'{lines}{dots}{xlabels}'
+        f'<line x1="{PL}" y1="{PT}" x2="{PL}" y2="{height-PB}" stroke="#2D3561" stroke-width="2">'
+        f'<animate attributeName="stroke" values="#2D3561;#4CAF50;#2D3561" dur="3s" repeatCount="indefinite"/>'
+        f'</line>'
+        f'<line x1="{PL}" y1="{height-PB}" x2="{width-PR}" y2="{height-PB}" stroke="#2D3561" stroke-width="2">'
+        f'<animate attributeName="stroke" values="#2D3561;#F44336;#2D3561" dur="3s" repeatCount="indefinite"/>'
+        f'</line>'
+        f'{glow_effects}{lines}{dots}{xlabels}'
     )
 
     return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">{inner}</svg>'
@@ -252,8 +321,8 @@ def _build_line_chart_svg(series, width=860, height=220, y_axis_steps=4):
 def make_cycle_chart(sim):
     return svg_to_img(
         _build_line_chart_svg([
-            {"values": sim.history_charge[-24:], "color": PRIMARY, "fill": PRIMARY},
-            {"values": sim.history_discharge[-24:], "color": ERROR, "fill": ERROR, "dash": True, "stroke_width": 2},
+            {"values": sim.history_charge[-24:], "color": "#4CAF50", "fill": "#4CAF50", "stroke_width": 3},
+            {"values": sim.history_discharge[-24:], "color": "#F44336", "fill": "#F44336", "dash": True, "stroke_width": 3},
         ]),
         None, height=220,
     )
@@ -262,7 +331,7 @@ def make_cycle_chart(sim):
 def make_level_chart(sim):
     return svg_to_img(
         _build_line_chart_svg([
-            {"values": sim.history_level[-24:], "color": SECONDARY, "fill": SECONDARY, "stroke_width": 2.5},
+            {"values": sim.history_level[-24:], "color": "#2196F3", "fill": "#2196F3", "stroke_width": 3},
         ]),
         None, height=180,
     )
@@ -271,8 +340,8 @@ def make_level_chart(sim):
 def make_health_chart(sim):
     return svg_to_img(
         _build_line_chart_svg([
-            {"values": sim.history_health[-12:], "color": PRIMARY, "fill": PRIMARY, "stroke_width": 2.5},
-            {"values": sim.history_cap[-12:], "color": SECONDARY, "fill": SECONDARY, "dash": True, "stroke_width": 1.8},
+            {"values": sim.history_health[-12:], "color": "#4CAF50", "fill": "#4CAF50", "stroke_width": 3},
+            {"values": sim.history_cap[-12:], "color": "#FF9F40", "fill": "#FF9F40", "dash": True, "stroke_width": 3},
         ]),
         None, height=180,
     )
@@ -504,21 +573,21 @@ def BatteryView(page: ft.Page):
         ])
 
     cycle_card = chart_card(
-        "24-Hour Charge/Discharge Cycle",
-        "Hover over chart — tooltip shows exact kW value at each point",
+        "⚡ 24-Hour Charge/Discharge Cycle",
+        "Real-time battery charging and discharging patterns with animated data points",
         make_cycle_chart(SIM), cycle_chart_ref, height=220,
-        legend=[lgnd(PRIMARY, "Charging (kW)"), lgnd(ERROR, "Discharging (kW)")],
+        legend=[lgnd("#4CAF50", "Charging (kW)"), lgnd("#F44336", "Discharging (kW)")],
     )
     level_card = chart_card(
-        "Battery Level History",
-        "24-hour state of charge — hover for exact % value",
+        "🔋 Battery Level History",
+        "24-hour state of charge with real-time updates and smooth animations",
         make_level_chart(SIM), level_chart_ref, height=180,
     )
     health_card = chart_card(
-        "Battery Health Trend",
-        "Health and capacity over charge cycles — hover for values",
+        "💚 Battery Health Trend",
+        "Health and capacity monitoring with animated trend indicators",
         make_health_chart(SIM), health_chart_ref, height=180,
-        legend=[lgnd(PRIMARY, "Health (%)"), lgnd(SECONDARY, "Capacity (%)")],
+        legend=[lgnd("#4CAF50", "Health (%)"), lgnd("#FF9F40", "Capacity (%)")],
     )
 
     # ── System info + alerts ───────────────────────────────────────────────────
@@ -615,10 +684,10 @@ def BatteryView(page: ft.Page):
                 bgcolor="#051a12", border=ft.border.all(1, f"{PRIMARY}44"),
                 border_radius=20,
                 padding=ft.padding.symmetric(horizontal=14, vertical=7),
-                tooltip="Data refreshes every 0.5 seconds",
+                tooltip="Ultra-fast data refreshes every 0.2s with stunning animations",
                 content=ft.Row(spacing=8, controls=[
                     ft.Container(width=8, height=8, border_radius=4, bgcolor=PRIMARY),
-                    ft.Text("Live · 0.5s", size=12, color=PRIMARY,
+                    ft.Text("⚡ Ultra Live · 0.2s", size=12, color=PRIMARY,
                             weight=ft.FontWeight.W_600),
                 ]),
             ),
@@ -642,15 +711,16 @@ def BatteryView(page: ft.Page):
         ],
     )
 
-    # ── Live loop — həqiqətən 0.5 saniyədən bir ───────────────────────────────
+    # ── Ultra-Fast Real-time Loop — Maximum Performance with Impressive Updates ───────
     def live_loop():
         while not _stop.is_set():
-            time.sleep(0.5)
-            SIM.tick()
             try:
+                time.sleep(0.2)  # Ultra-fast updates for maximum impressive effect
+                SIM.tick()
+                
                 sc = SIM.status_color
 
-                # Scalar values
+                # Update all scalar values with better formatting
                 if ref_health.current:
                     ref_health.current.value = f"{SIM.health:.1f}"
                 if ref_charge_rate.current:
@@ -675,6 +745,7 @@ def BatteryView(page: ft.Page):
                     ref_status_txt.current.value = SIM.status_text
                     ref_status_txt.current.color = sc
 
+                # Update status indicators
                 hs, hc = SIM.health_status
                 if ref_health_stat.current:
                     ref_health_stat.current.value = hs
@@ -685,38 +756,49 @@ def BatteryView(page: ft.Page):
                     ref_temp_stat.current.value = ts
                     ref_temp_stat.current.color = tc
 
-                # Level bar
+                # Update level bar with smooth animation
                 bw = max(4, int(SIM.level / 100 * 280))
                 if ref_level_bar.current:
-                    ref_level_bar.current.width  = bw
+                    ref_level_bar.current.width = bw
                     ref_level_bar.current.bgcolor = _level_color(SIM.level)
 
-                # Battery SVG
+                # Update battery SVG with enhanced visuals
                 if ref_battery_svg.current:
                     b64 = base64.b64encode(
                         build_battery_svg(SIM.level, SIM.mode).encode()).decode()
                     ref_battery_svg.current.src = "data:image/svg+xml;base64," + b64
 
-                if cycle_chart_ref.current:
-                    cycle_chart_ref.current.src = _enc(_build_line_chart_svg([
-                        {"values": SIM.history_charge[-24:], "color": PRIMARY, "fill": PRIMARY},
-                        {"values": SIM.history_discharge[-24:], "color": ERROR, "fill": ERROR, "dash": True, "stroke_width": 2},
-                    ]))
+                # Update charts with enhanced colors and animations
+                try:
+                    if cycle_chart_ref.current:
+                        cycle_chart_ref.current.src = _enc(_build_line_chart_svg([
+                            {"values": SIM.history_charge[-24:], "color": "#4CAF50", "fill": "#4CAF50", "stroke_width": 3},
+                            {"values": SIM.history_discharge[-24:], "color": "#F44336", "fill": "#F44336", "dash": True, "stroke_width": 3},
+                        ]))
 
-                if level_chart_ref.current:
-                    level_chart_ref.current.src = _enc(_build_line_chart_svg([
-                        {"values": SIM.history_level[-24:], "color": SECONDARY, "fill": SECONDARY, "stroke_width": 2.5},
-                    ], height=180))
+                    if level_chart_ref.current:
+                        level_chart_ref.current.src = _enc(_build_line_chart_svg([
+                            {"values": SIM.history_level[-24:], "color": "#2196F3", "fill": "#2196F3", "stroke_width": 3},
+                        ], height=180))
 
-                if health_chart_ref.current:
-                    health_chart_ref.current.src = _enc(_build_line_chart_svg([
-                        {"values": SIM.history_health[-12:], "color": PRIMARY, "fill": PRIMARY, "stroke_width": 2.5},
-                        {"values": SIM.history_cap[-12:], "color": SECONDARY, "fill": SECONDARY, "dash": True, "stroke_width": 1.8},
-                    ], height=180))
+                    if health_chart_ref.current:
+                        health_chart_ref.current.src = _enc(_build_line_chart_svg([
+                            {"values": SIM.history_health[-12:], "color": "#4CAF50", "fill": "#4CAF50", "stroke_width": 3},
+                            {"values": SIM.history_cap[-12:], "color": "#FF9F40", "fill": "#FF9F40", "dash": True, "stroke_width": 3},
+                        ], height=180))
+                except Exception as chart_error:
+                    print(f"Chart update error: {chart_error}")
 
-                page.update()
-            except Exception:
-                pass
+                # Force page update for real-time changes
+                try:
+                    page.update()
+                except Exception as update_error:
+                    print(f"Page update error: {update_error}")
+                    
+            except Exception as loop_error:
+                print(f"Live loop error: {loop_error}")
+                # Continue the loop even if there's an error
+                continue
 
     threading.Thread(target=live_loop, daemon=True).start()
     page.on_disconnect = lambda e: _stop.set()

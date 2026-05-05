@@ -1,12 +1,14 @@
 import asyncio
+import csv
 import flet as ft
+import os
 import random
 import threading
-import time
 import base64
 import math
 from datetime import datetime
 from assets.styles import *
+from database.db import insert_energy_data, get_latest_energy, get_energy_history
 
 
 class LiveData:
@@ -26,6 +28,11 @@ class LiveData:
 
     @classmethod
     def tick(cls):
+        prev_solar = cls.solar
+        prev_wind = cls.wind
+        prev_consume = cls.consume
+        prev_grid = cls.grid
+        prev_battery = cls.battery
         hour = datetime.now().hour
         solar_base = max(0, 180 * math.sin(math.pi * (hour - 6) / 14)) if 6 <= hour <= 20 else 0
         cls.solar    = round(max(0, min(200, solar_base + random.uniform(-8, 8))), 1)
@@ -43,8 +50,62 @@ class LiveData:
         cls.co2_saved  = round(max(8, min(25, cls.co2_saved + random.uniform(-0.3, 0.3))), 1)
         cls.revenue    = round(max(200, min(400, cls.revenue + random.uniform(-5, 5))), 1)
 
+        # Avoid "flat" looking updates by nudging unchanged rounded values.
+        if cls.solar == prev_solar:
+            cls.solar = round(max(0, min(200, cls.solar + random.choice([-0.3, 0.3]))), 1)
+        if cls.wind == prev_wind:
+            cls.wind = round(max(0, min(150, cls.wind + random.choice([-0.3, 0.3]))), 1)
+        if cls.consume == prev_consume:
+            cls.consume = round(max(50, min(250, cls.consume + random.choice([-0.4, 0.4]))), 1)
+        if cls.grid == prev_grid:
+            cls.grid = round(max(0, min(100, cls.grid + random.choice([-0.2, 0.2]))), 1)
+        if cls.battery == prev_battery:
+            cls.battery = round(max(5, min(100, cls.battery + random.choice([-0.2, 0.2]))), 1)
+
 
 LD = LiveData()
+
+
+class DashboardRealtimeBus:
+    _lock = threading.Lock()
+    _listeners = []
+    _stopped = threading.Event()
+    _thread = None
+
+    @classmethod
+    def start(cls, fn):
+        with cls._lock:
+            if fn in cls._listeners:
+                return
+            cls._listeners.append(fn)
+            if cls._thread and cls._thread.is_alive():
+                return
+            cls._stopped.clear()
+            cls._thread = threading.Thread(target=cls._loop, daemon=True)
+            cls._thread.start()
+
+    @classmethod
+    def stop(cls, fn):
+        with cls._lock:
+            if fn in cls._listeners:
+                cls._listeners.remove(fn)
+            if not cls._listeners:
+                cls._stopped.set()
+
+    @classmethod
+    def _loop(cls):
+        while not cls._stopped.is_set():
+            cls._stopped.wait(1.0)
+            if cls._stopped.is_set():
+                break
+            LD.tick()
+            with cls._lock:
+                listeners = list(cls._listeners)
+            for listener in listeners:
+                try:
+                    listener()
+                except Exception:
+                    pass
 
 HOURS      = ["00","03","06","09","12","15","18","21"]
 SOLAR_DAY  = [0, 2, 18, 65, 118, 95, 45, 5]
@@ -213,8 +274,10 @@ def _enc(svg):
 
 
 def DashboardView(page: ft.Page, user_data: dict = None):
-    _stop      = threading.Event()
     chart_mode = {"v": "daily"}
+    current_user_id = (user_data or {}).get("id")
+    _live_stop = threading.Event()
+    live_seq = {"v": 0}
 
     cstate = {
         "sv": None, "wv": None, "pts_s": None, "pts_w": None,
@@ -263,17 +326,49 @@ def DashboardView(page: ft.Page, user_data: dict = None):
     snackbar_ref = ft.Ref[ft.SnackBar]()
     appbar_title = ft.Ref[ft.Text]()
     dt_ref       = ft.Ref[ft.DataTable]()
+    ai1_badge_box = ft.Ref[ft.Container]()
+    ai1_badge_txt = ft.Ref[ft.Text]()
+    ai1_desc      = ft.Ref[ft.Text]()
+    ai1_tip       = ft.Ref[ft.Text]()
+    ai2_badge_box = ft.Ref[ft.Container]()
+    ai2_badge_txt = ft.Ref[ft.Text]()
+    ai2_desc      = ft.Ref[ft.Text]()
+    ai2_tip       = ft.Ref[ft.Text]()
+    ai3_badge_box = ft.Ref[ft.Container]()
+    ai3_badge_txt = ft.Ref[ft.Text]()
+    ai3_desc      = ft.Ref[ft.Text]()
+    ai3_tip       = ft.Ref[ft.Text]()
+    alert1_box    = ft.Ref[ft.Container]()
+    alert1_text   = ft.Ref[ft.Text]()
+    alert2_box    = ft.Ref[ft.Container]()
+    alert2_text   = ft.Ref[ft.Text]()
+    alert3_box    = ft.Ref[ft.Container]()
+    alert3_text   = ft.Ref[ft.Text]()
 
     CHART_H = 290
     BATT_H  = 155
 
     # ── SnackBar helper ───────────────────────────────────────────────
     def show_snack(message, color=PRIMARY):
-        if snackbar_ref.current:
-            snackbar_ref.current.content = ft.Text(message, color="#040d1a", weight=ft.FontWeight.W_600)
-            snackbar_ref.current.bgcolor = color
-            snackbar_ref.current.open    = True
-            page.update()
+        if not page.snack_bar:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(""),
+                bgcolor=PRIMARY,
+                behavior=ft.SnackBarBehavior.FLOATING,
+                duration=2500,
+            )
+        page.snack_bar.content = ft.Text(message, color="#040d1a", weight=ft.FontWeight.W_600)
+        page.snack_bar.bgcolor = color
+        try:
+            # Preferred on older Flet builds.
+            page.show_snack_bar(page.snack_bar)
+        except Exception:
+            try:
+                # Preferred on newer Flet builds.
+                page.open(page.snack_bar)
+            except Exception:
+                page.snack_bar.open = True
+                page.update()
 
     # ── BottomSheet ───────────────────────────────────────────────────
     bottom_sheet = ft.BottomSheet(
@@ -364,6 +459,103 @@ def DashboardView(page: ft.Page, user_data: dict = None):
         ),
     )
 
+    def download_csv_action(e):
+        try:
+            export_dir = os.path.join(os.getcwd(), "exports")
+            os.makedirs(export_dir, exist_ok=True)
+            file_name = f"energy_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            file_path = os.path.join(export_dir, file_name)
+
+            rows = []
+            if current_user_id:
+                history = list(reversed(get_energy_history(current_user_id, limit=200)))
+                for item in history:
+                    rows.append({
+                        "time": str(item.get("recorded_at", "")),
+                        "solar": float(item.get("solar_kwh", 0)),
+                        "wind": float(item.get("wind_kwh", 0)),
+                        "consume": float(item.get("consumption_kwh", 0)),
+                        "battery": float(item.get("battery_percent", 0)),
+                        "grid": float(item.get("grid_sold_kwh", 0)),
+                    })
+            if not rows:
+                rows.append({
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "solar": LD.solar,
+                    "wind": LD.wind,
+                    "consume": LD.consume,
+                    "battery": LD.battery,
+                    "grid": LD.grid,
+                })
+
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["time", "solar", "wind", "consume", "battery", "grid"],
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+
+            close_csv_sheet()
+            show_snack("Download completed successfully.", SECONDARY)
+        except Exception:
+            close_csv_sheet()
+            show_snack("Download failed. Please try again.", ERROR)
+
+    csv_sheet = ft.BottomSheet(
+        open=False,
+        bgcolor=BG_CARD,
+        content=ft.Container(
+            padding=ft.padding.all(24),
+            content=ft.Column(
+                tight=True,
+                spacing=14,
+                controls=[
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("Export Data to CSV", size=17, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                            ft.IconButton(icon=ft.Icons.CLOSE, icon_color=TEXT_MUTED, on_click=lambda e: close_csv_sheet()),
+                        ],
+                    ),
+                    ft.Divider(color=BORDER, height=1),
+                    ft.Text("Select export range and save your live energy records as CSV.", size=12, color=TEXT_SECONDARY),
+                    ft.Dropdown(
+                        value="Last 12 records",
+                        options=[
+                            ft.dropdown.Option("Last 12 records"),
+                            ft.dropdown.Option("Last 50 records"),
+                            ft.dropdown.Option("Today"),
+                            ft.dropdown.Option("This week"),
+                        ],
+                        bgcolor="#0a1628",
+                        border_color=BORDER,
+                        color=TEXT_PRIMARY,
+                    ),
+                    ft.Row(
+                        spacing=10,
+                        controls=[
+                            ft.FilledButton(
+                                "Download CSV",
+                                icon=ft.Icons.DOWNLOAD,
+                                style=ft.ButtonStyle(bgcolor=SECONDARY, color="#040d1a"),
+                                on_click=download_csv_action,
+                                expand=True,
+                            ),
+                            ft.OutlinedButton(
+                                "Cancel",
+                                icon=ft.Icons.CANCEL_OUTLINED,
+                                style=ft.ButtonStyle(color=TEXT_MUTED, side=ft.BorderSide(1, BORDER)),
+                                on_click=lambda e: close_csv_sheet(),
+                                expand=True,
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ),
+    )
+
     def open_sheet():
         bottom_sheet.open = True
         page.update()
@@ -372,7 +564,16 @@ def DashboardView(page: ft.Page, user_data: dict = None):
         bottom_sheet.open = False
         page.update()
 
+    def open_csv_sheet():
+        csv_sheet.open = True
+        page.update()
+
+    def close_csv_sheet():
+        csv_sheet.open = False
+        page.update()
+
     page.overlay.append(bottom_sheet)
+    page.overlay.append(csv_sheet)
 
     # ── AppBar ────────────────────────────────────────────────────────
     now_str = datetime.now().strftime("%d %b %Y")
@@ -782,7 +983,7 @@ def DashboardView(page: ft.Page, user_data: dict = None):
     )
 
     # ── AI panel ──────────────────────────────────────────────────────
-    def ai_card(title, desc, tip, badge_txt, bc):
+    def ai_card(title, desc, tip, badge_txt, bc, desc_ref, tip_ref, badge_box_ref, badge_txt_ref):
         return ft.Container(
             bgcolor="#050e1c", border=ft.border.all(1, BORDER),
             border_radius=12, padding=ft.padding.all(16),
@@ -793,18 +994,19 @@ def DashboardView(page: ft.Page, user_data: dict = None):
                         ft.Text(title, size=13, color=TEXT_PRIMARY,
                                 weight=ft.FontWeight.W_600),
                         ft.Container(
+                            ref=badge_box_ref,
                             bgcolor=f"{bc}18", border=ft.border.all(1, f"{bc}44"),
                             border_radius=20,
                             padding=ft.padding.symmetric(horizontal=10, vertical=4),
-                            content=ft.Text(badge_txt, size=11, color=bc,
+                            content=ft.Text(badge_txt, ref=badge_txt_ref, size=11, color=bc,
                                             weight=ft.FontWeight.BOLD),
                         ),
                     ],
                 ),
-                ft.Text(desc, size=12, color=TEXT_SECONDARY),
+                ft.Text(desc, ref=desc_ref, size=12, color=TEXT_SECONDARY),
                 ft.Row(spacing=6, controls=[
                     ft.Icon(ft.Icons.LIGHTBULB_OUTLINE, color=ACCENT, size=13),
-                    ft.Text(tip, size=11, color=ACCENT),
+                    ft.Text(tip, ref=tip_ref, size=11, color=ACCENT),
                 ]),
             ]),
         )
@@ -830,17 +1032,21 @@ def DashboardView(page: ft.Page, user_data: dict = None):
                 ]),
             ]),
             ai_card("Next Hour Forecast", "High solar production expected",
-                    "Store excess energy in battery", "94% confident", PRIMARY),
+                    "Store excess energy in battery", "94% confident", PRIMARY,
+                    ai1_desc, ai1_tip, ai1_badge_box, ai1_badge_txt),
             ai_card("Peak Hours (6–9 PM)", "High consumption period ahead",
-                    "Use battery power, avoid grid", "87% confident", ACCENT),
+                    "Use battery power, avoid grid", "87% confident", ACCENT,
+                    ai2_desc, ai2_tip, ai2_badge_box, ai2_badge_txt),
             ai_card("Tomorrow Outlook", "Excellent wind conditions forecast",
-                    "Plan to sell surplus to grid", "91% confident", SECONDARY),
+                    "Plan to sell surplus to grid", "91% confident", SECONDARY,
+                    ai3_desc, ai3_tip, ai3_badge_box, ai3_badge_txt),
         ]),
     )
 
     # ── Alerts panel ──────────────────────────────────────────────────
-    def alert_row(icon, color, text):
+    def alert_row(icon, color, text, row_ref, text_ref):
         return ft.Container(
+            ref=row_ref,
             bgcolor=f"{color}0d", border=ft.border.all(1, f"{color}33"),
             border_radius=12,
             padding=ft.padding.symmetric(horizontal=16, vertical=14),
@@ -850,7 +1056,7 @@ def DashboardView(page: ft.Page, user_data: dict = None):
                     content=ft.Icon(icon, color=color, size=16),
                     alignment=ft.Alignment(0, 0),
                 ),
-                ft.Text(text, size=13, color=TEXT_PRIMARY, expand=True),
+                ft.Text(text, ref=text_ref, size=13, color=TEXT_PRIMARY, expand=True),
             ]),
         )
 
@@ -863,11 +1069,11 @@ def DashboardView(page: ft.Page, user_data: dict = None):
             ft.Text("Smart Alerts", size=15,
                     weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
             alert_row(ft.Icons.CHECK_CIRCLE_OUTLINE, PRIMARY,
-                      "High energy production — Consider selling to grid"),
+                      "High energy production — Consider selling to grid", alert1_box, alert1_text),
             alert_row(ft.Icons.WARNING_AMBER_OUTLINED, ACCENT,
-                      "Battery at 87% — Optimal charge level"),
+                      "Battery at 87% — Optimal charge level", alert2_box, alert2_text),
             alert_row(ft.Icons.INFO_OUTLINE, SECONDARY,
-                      "Solar panel maintenance due in 5 days"),
+                      "Solar panel maintenance due in 5 days", alert3_box, alert3_text),
         ]),
     )
 
@@ -984,20 +1190,44 @@ def DashboardView(page: ft.Page, user_data: dict = None):
         rows=[],
     )
 
-    def add_data_row():
-        time_str = datetime.now().strftime("%H:%M:%S")
+    def _record_to_row(time_str, solar, wind, consume, battery, grid):
         rec = ft.DataRow(cells=[
             ft.DataCell(ft.Text(time_str,              size=12, color=TEXT_SECONDARY)),
-            ft.DataCell(ft.Text(f"{LD.solar:.1f}",     size=12, color="#F59E0B")),
-            ft.DataCell(ft.Text(f"{LD.wind:.1f}",      size=12, color=SECONDARY)),
-            ft.DataCell(ft.Text(f"{LD.consume:.1f}",   size=12, color="#A855F7")),
-            ft.DataCell(ft.Text(f"{LD.battery:.1f}%",  size=12, color=PRIMARY)),
-            ft.DataCell(ft.Text(f"{LD.grid:.1f}",      size=12, color=ACCENT)),
+            ft.DataCell(ft.Text(f"{solar:.1f}",        size=12, color="#F59E0B")),
+            ft.DataCell(ft.Text(f"{wind:.1f}",         size=12, color=SECONDARY)),
+            ft.DataCell(ft.Text(f"{consume:.1f}",      size=12, color="#A855F7")),
+            ft.DataCell(ft.Text(f"{battery:.1f}%",     size=12, color=PRIMARY)),
+            ft.DataCell(ft.Text(f"{grid:.1f}",         size=12, color=ACCENT)),
         ])
         data_records["records"].append(rec)
         if len(data_records["records"]) > 12:
             data_records["records"].pop(0)
         data_table.rows = list(data_records["records"])
+
+    def add_data_row():
+        _record_to_row(
+            datetime.now().strftime("%H:%M:%S"),
+            LD.solar,
+            LD.wind,
+            LD.consume,
+            LD.battery,
+            LD.grid,
+        )
+
+    def persist_current_snapshot():
+        if not current_user_id:
+            return
+        try:
+            insert_energy_data(
+                current_user_id,
+                LD.solar,
+                LD.wind,
+                LD.consume,
+                LD.battery,
+                LD.grid,
+            )
+        except Exception:
+            pass
 
     data_section = ft.Container(
         bgcolor=BG_CARD, border_radius=16,
@@ -1033,7 +1263,7 @@ def DashboardView(page: ft.Page, user_data: dict = None):
                                 shape=ft.RoundedRectangleBorder(radius=8),
                                 elevation=0,
                             ),
-                            on_click=lambda e: show_snack("📥 CSV exported!", SECONDARY),
+                            on_click=lambda e: open_csv_sheet(),
                         ),
                     ]),
                 ],
@@ -1068,79 +1298,197 @@ def DashboardView(page: ft.Page, user_data: dict = None):
         ],
     )
 
-    # ── Live loop ─────────────────────────────────────────────────────
-    def live_loop():
-        while not _stop.is_set():
-            time.sleep(1.0)
+    # ── Live stream tick handler (websocket-like local push) ──────────
+    def on_live_tick():
+        try:
+            live_seq["v"] += 1
             LD.tick()
-            try:
-                # Update overview cards
-                for ref, val in [
-                    (r_solar,      LD.solar),
-                    (r_wind,       LD.wind),
-                    (r_consume,    LD.consume),
-                    (r_grid,       LD.grid),
-                    (r_battery,    LD.battery),
-                    (r_efficiency, LD.efficiency),
-                    (r_co2,        LD.co2_saved),
-                    (r_revenue,    LD.revenue),
-                ]:
-                    if ref.current:
-                        ref.current.value = f"{val:.1f}"
+            # Force visible micro-movement each tick so values never look frozen.
+            pulse = -1 if live_seq["v"] % 2 == 0 else 1
+            LD.solar = round(max(0, min(200, LD.solar + 0.2 * pulse)), 1)
+            LD.wind = round(max(0, min(150, LD.wind + 0.2 * pulse)), 1)
+            LD.consume = round(max(50, min(250, LD.consume + 0.3 * pulse)), 1)
+            LD.grid = round(max(0, min(100, LD.grid + 0.2 * pulse)), 1)
+            LD.battery = round(max(5, min(100, LD.battery + 0.1 * pulse)), 1)
+            LD.flow_s = round(max(0, LD.solar * 0.6 + pulse * 0.2), 1)
+            LD.flow_w = round(max(0, LD.wind * 0.7 + pulse * 0.2), 1)
+            LD.flow_b = round(max(0, LD.battery * 0.5 + pulse * 0.2), 1)
+            LD.flow_g = round(max(0, LD.grid * 0.8 + pulse * 0.2), 1)
+            LD.battery = round(max(5, min(100, LD.battery + random.uniform(-1.5, 1.5))), 1)
+            # Update overview cards
+            for ref, val in [
+                (r_solar,      LD.solar),
+                (r_wind,       LD.wind),
+                (r_consume,    LD.consume),
+                (r_grid,       LD.grid),
+                (r_battery,    LD.battery),
+                (r_efficiency, LD.efficiency),
+                (r_co2,        LD.co2_saved),
+                (r_revenue,    LD.revenue),
+            ]:
+                if ref.current:
+                    ref.current.value = f"{val:.1f}"
 
-                # Battery bar
-                bw = max(4, int(LD.battery / 100 * 200))
-                if r_batt_bar.current:
-                    r_batt_bar.current.width   = bw
-                    r_batt_bar.current.bgcolor = (
-                        ERROR   if LD.battery < 20 else
-                        WARNING if LD.battery < 40 else PRIMARY
-                    )
+            # Battery bar
+            bw = max(4, int(LD.battery / 100 * 200))
+            if r_batt_bar.current:
+                r_batt_bar.current.width = bw
+                r_batt_bar.current.bgcolor = (
+                    ERROR if LD.battery < 20 else
+                    WARNING if LD.battery < 40 else PRIMARY
+                )
 
-                # Flow bars
-                for rv, rb, val, color in [
-                    (r_fs_val, r_fs_bar, LD.solar,         PRIMARY),
-                    (r_fw_val, r_fw_bar, LD.wind,          SECONDARY),
-                    (r_fb_val, r_fb_bar, LD.consume * 0.6, "#A855F7"),
-                    (r_fg_val, r_fg_bar, LD.grid,          ACCENT),
-                ]:
-                    if rv.current:
-                        rv.current.value = f"{val:.1f} kWh"
-                    if rb.current:
-                        rb.current.width = max(4, int(min(val, 180) / 180 * 240))
+            # Flow bars
+            for rv, rb, val in [
+                (r_fs_val, r_fs_bar, LD.solar),
+                (r_fw_val, r_fw_bar, LD.wind),
+                (r_fb_val, r_fb_bar, LD.consume * 0.6),
+                (r_fg_val, r_fg_bar, LD.grid),
+            ]:
+                if rv.current:
+                    rv.current.value = f"{val:.1f} kWh"
+                if rb.current:
+                    rb.current.width = max(4, int(min(val, 180) / 180 * 240))
 
-                # Chart update
-                for i in range(len(base_solar_day)):
-                    base_solar_day[i] = max(0, SOLAR_DAY[i] + random.randint(-10, 10))
-                    base_wind_day[i]  = max(0, WIND_DAY[i]  + random.randint(-5,  5))
-                svg, sv, wv, pts_s, pts_w, lbl, PL, PR, PT, PB, W, H = \
-                    build_svg(chart_mode["v"], base_solar_day, base_wind_day)
-                cstate.update(sv=sv, wv=wv, pts_s=pts_s, pts_w=pts_w,
-                              labels=lbl, W=W, H=H, PL=PL, PB=PB)
-                if chart_img.current:
-                    chart_img.current.src = _enc(svg)
+            # Chart update
+            for i in range(len(base_solar_day)):
+                base_solar_day[i] = max(0, SOLAR_DAY[i] + random.randint(-10, 10))
+                base_wind_day[i] = max(0, WIND_DAY[i] + random.randint(-5, 5))
+            svg, sv, wv, pts_s, pts_w, lbl, PL, PR, PT, PB, W, H = build_svg(
+                chart_mode["v"], base_solar_day, base_wind_day
+            )
+            cstate.update(sv=sv, wv=wv, pts_s=pts_s, pts_w=pts_w, labels=lbl, W=W, H=H, PL=PL, PB=PB)
+            if chart_img.current:
+                chart_img.current.src = _enc(svg)
 
-                # Battery chart update
-                bv = batt_state["bv"][1:] + [LD.battery]
-                batt_state["bv"] = bv
-                bsvg, bpts, _ = build_battery_svg(bv)
-                batt_state["pts"] = bpts
-                if batt_img.current:
-                    batt_img.current.src = _enc(bsvg)
+            # Battery chart update
+            bv = batt_state["bv"][1:] + [LD.battery]
+            batt_state["bv"] = bv
+            bsvg, bpts, _ = build_battery_svg(bv)
+            batt_state["pts"] = bpts
+            if batt_img.current:
+                batt_img.current.src = _enc(bsvg)
 
-                # DataTable row
-                add_data_row()
+            # Dynamic AI predictions and alert coloring based on live values
+            status_color = PRIMARY
+            status_txt = "healthy"
+            confidence = 92
+            if LD.battery < 25 or LD.consume > 210:
+                status_color = ERROR
+                status_txt = "critical"
+                confidence = 81
+            elif LD.battery < 40 or LD.consume > 180:
+                status_color = ACCENT
+                status_txt = "warning"
+                confidence = 87
+            elif LD.solar + LD.wind > LD.consume:
+                status_color = "#22C55E"
+                status_txt = "healthy"
+                confidence = 95
+            else:
+                status_color = SECONDARY
+                status_txt = "info"
+                confidence = 90
 
-                page.update()
-            except Exception:
-                pass
+            if ai1_desc.current:
+                ai1_desc.current.value = f"Solar {LD.solar:.1f} kWh and wind {LD.wind:.1f} kWh now."
+            if ai1_tip.current:
+                ai1_tip.current.value = "Charge battery from surplus energy." if LD.solar + LD.wind > LD.consume else "Balance loads during low generation."
+            if ai1_badge_txt.current:
+                ai1_badge_txt.current.value = f"{confidence}% {status_txt}"
+                ai1_badge_txt.current.color = status_color
+            if ai1_badge_box.current:
+                ai1_badge_box.current.bgcolor = f"{status_color}22"
+                ai1_badge_box.current.border = ft.border.all(1, f"{status_color}66")
 
-    threading.Thread(target=live_loop, daemon=True).start()
-    page.on_disconnect = lambda e: _stop.set()
+            risk_color = ACCENT if LD.consume > 170 else "#22C55E"
+            risk_txt = "warning" if LD.consume > 170 else "healthy"
+            if ai2_desc.current:
+                ai2_desc.current.value = f"Consumption is {LD.consume:.1f} kWh with battery at {LD.battery:.1f}%."
+            if ai2_tip.current:
+                ai2_tip.current.value = "Use battery now, avoid expensive grid usage." if LD.consume > 170 else "Current load is stable."
+            if ai2_badge_txt.current:
+                ai2_badge_txt.current.value = f"{max(80, min(97, int(LD.consume / 2)))}% {risk_txt}"
+                ai2_badge_txt.current.color = risk_color
+            if ai2_badge_box.current:
+                ai2_badge_box.current.bgcolor = f"{risk_color}22"
+                ai2_badge_box.current.border = ft.border.all(1, f"{risk_color}66")
+
+            out_color = SECONDARY if LD.wind > 70 else (ACCENT if LD.wind > 45 else ERROR)
+            out_txt = "healthy" if LD.wind > 70 else ("warning" if LD.wind > 45 else "critical")
+            if ai3_desc.current:
+                ai3_desc.current.value = f"Wind trend now {LD.wind:.1f} kWh, grid export {LD.grid:.1f} kWh."
+            if ai3_tip.current:
+                ai3_tip.current.value = "Plan extra export windows." if LD.wind > 70 else "Keep reserve for peak loads."
+            if ai3_badge_txt.current:
+                ai3_badge_txt.current.value = f"{max(78, min(96, int(LD.wind + 20)))}% {out_txt}"
+                ai3_badge_txt.current.color = out_color
+            if ai3_badge_box.current:
+                ai3_badge_box.current.bgcolor = f"{out_color}22"
+                ai3_badge_box.current.border = ft.border.all(1, f"{out_color}66")
+
+            def set_alert_style(row_ref, text_ref, color, text):
+                if row_ref.current:
+                    row_ref.current.bgcolor = f"{color}20"
+                    row_ref.current.border = ft.border.all(1, f"{color}66")
+                if text_ref.current:
+                    text_ref.current.value = text
+
+            if LD.battery < 25:
+                set_alert_style(alert2_box, alert2_text, ERROR, f"Battery critical at {LD.battery:.1f}% — Start charging immediately")
+            elif LD.battery < 40:
+                set_alert_style(alert2_box, alert2_text, ACCENT, f"Battery warning at {LD.battery:.1f}% — Consider reducing load")
+            else:
+                set_alert_style(alert2_box, alert2_text, "#22C55E", f"Battery healthy at {LD.battery:.1f}%")
+
+            if LD.solar + LD.wind > LD.consume:
+                set_alert_style(alert1_box, alert1_text, "#22C55E", "Generation exceeds consumption — Good time to export")
+            else:
+                set_alert_style(alert1_box, alert1_text, SECONDARY, "Consumption is higher than generation — Monitor usage")
+
+            set_alert_style(
+                alert3_box,
+                alert3_text,
+                SECONDARY if LD.wind > 45 else ACCENT,
+                "Wind trend is strong — Maintenance can be scheduled later" if LD.wind > 45
+                else "Wind trend dropped — Check turbine diagnostics soon",
+            )
+
+            # DataTable row
+            add_data_row()
+            page.update()
+            # Persist to DB (if logged-in user exists) without breaking UI updates
+            persist_current_snapshot()
+        except Exception:
+            pass
+
+    async def local_live_stream():
+        while not _live_stop.is_set():
+            on_live_tick()
+            await asyncio.sleep(1.0)
+
+    page.run_task(local_live_stream)
+
+    def _on_disconnect(e):
+        _live_stop.set()
+
+    page.on_disconnect = _on_disconnect
 
     # Init values
     def _init():
         try:
+            if current_user_id:
+                latest = get_latest_energy(current_user_id)
+                if latest:
+                    LD.solar = float(latest.get("solar_kwh", LD.solar))
+                    LD.wind = float(latest.get("wind_kwh", LD.wind))
+                    LD.consume = float(latest.get("consumption_kwh", LD.consume))
+                    LD.battery = float(latest.get("battery_percent", LD.battery))
+                    LD.grid = float(latest.get("grid_sold_kwh", LD.grid))
+                    LD.flow_s = round(max(0, LD.solar * 0.6), 1)
+                    LD.flow_w = round(max(0, LD.wind * 0.7), 1)
+                    LD.flow_b = round(max(0, LD.battery * 0.5), 1)
+                    LD.flow_g = round(max(0, LD.grid * 0.8), 1)
             for ref, val in [
                 (r_solar,      LD.solar),
                 (r_wind,       LD.wind),
@@ -1163,7 +1511,27 @@ def DashboardView(page: ft.Page, user_data: dict = None):
             ]:
                 if rv.current:
                     rv.current.value = f"{val:.1f} kWh"
-            add_data_row()
+            if current_user_id:
+                history = list(reversed(get_energy_history(current_user_id, limit=12)))
+                data_records["records"].clear()
+                for item in history:
+                    ts = item.get("recorded_at")
+                    try:
+                        tlabel = datetime.fromisoformat(str(ts)).strftime("%H:%M:%S") if ts else "--:--:--"
+                    except Exception:
+                        tlabel = str(ts)[11:19] if ts else "--:--:--"
+                    _record_to_row(
+                        tlabel,
+                        float(item.get("solar_kwh", 0)),
+                        float(item.get("wind_kwh", 0)),
+                        float(item.get("consumption_kwh", 0)),
+                        float(item.get("battery_percent", 0)),
+                        float(item.get("grid_sold_kwh", 0)),
+                    )
+                if not data_records["records"]:
+                    add_data_row()
+            else:
+                add_data_row()
             page.update()
         except Exception:
             pass
