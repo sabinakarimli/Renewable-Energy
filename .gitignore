@@ -32,6 +32,14 @@ Desktop.ini
 *.db-shm
 *.db-wal
 
+# Database
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+energy.db
+test.svg
+
 # Logs
 *.log
 

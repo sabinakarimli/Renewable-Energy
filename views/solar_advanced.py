@@ -1,4 +1,5 @@
 import flet as ft
+import asyncio
 import random
 import threading
 import time
@@ -379,6 +380,16 @@ def AdvancedSolarView(page: ft.Page):
     r_batt_pct= ft.Ref[ft.Text]()
     r_progress = ft.Ref[ft.ProgressBar]()
     r_progress_lbl = ft.Ref[ft.Text]()
+    r_notice_box = ft.Ref[ft.Container]()
+    r_notice_txt = ft.Ref[ft.Text]()
+    r_ai_score = ft.Ref[ft.Text]()
+    r_ai_mode = ft.Ref[ft.Text]()
+    r_ai_action = ft.Ref[ft.Text]()
+    r_ai_bar = ft.Ref[ft.ProgressBar]()
+    r_pr = ft.Ref[ft.Text]()
+    r_heat_loss = ft.Ref[ft.Text]()
+    r_availability = ft.Ref[ft.Text]()
+    dt_ref = ft.Ref[ft.DataTable]()
 
     r_chart   = ft.Ref[ft.Image]()
     r_gauge_e = ft.Ref[ft.Image]()
@@ -388,6 +399,8 @@ def AdvancedSolarView(page: ft.Page):
     r_dcurve  = ft.Ref[ft.Image]()
 
     CHART_H = 270
+    live_seq = {"v": 0}
+    data_records = {"rows": []}
 
     # ── Stat card ──────────────────────────────────────────────────────────────
     def stat_card(icon, color, ibg, label, ref_v, unit, tooltip_txt=""):
@@ -415,6 +428,75 @@ def AdvancedSolarView(page: ft.Page):
                        ]),
             ]),
         )
+
+    def show_snack(message, color=PRIMARY):
+        if r_notice_box.current:
+            r_notice_box.current.visible = True
+            r_notice_box.current.bgcolor = f"{color}18"
+            r_notice_box.current.border = ft.border.all(1, f"{color}66")
+        if r_notice_txt.current:
+            r_notice_txt.current.value = message
+            r_notice_txt.current.color = color
+        if not page.snack_bar:
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(""),
+                bgcolor=color,
+                behavior=ft.SnackBarBehavior.FLOATING,
+                duration=2200,
+            )
+        page.snack_bar.content = ft.Text(message, color="#040d1a", weight=ft.FontWeight.W_600)
+        page.snack_bar.bgcolor = color
+        try:
+            page.show_snack_bar(page.snack_bar)
+        except Exception:
+            try:
+                page.open(page.snack_bar)
+            except Exception:
+                page.snack_bar.open = True
+        page.update()
+
+    def weather_label():
+        w = sim.weather
+        return ("Sunny" if w < 0.2 else
+                "Partly cloudy" if w < 0.5 else
+                "Cloudy" if w < 0.8 else "Rainy")
+
+    def solar_health():
+        faults = sum(1 for h in sim.panel_health if h == 2)
+        warns = sum(1 for h in sim.panel_health if h == 1)
+        score = max(0, min(100, int(
+            sim.efficiency * 3.4 +
+            sim.power_kw * 6.5 -
+            faults * 14 -
+            warns * 5 -
+            sim.weather * 18
+        )))
+        mode = "Peak harvest" if score >= 84 else ("Adaptive tracking" if score >= 68 else "Protective mode")
+        action = (
+            "Export surplus and keep battery charging."
+            if sim.grid_export > 0.4 else
+            "Reduce non-critical load until irradiance improves."
+            if sim.power_kw < sim.home_load else
+            "Hold steady and monitor panel temperature."
+        )
+        return score, mode, action
+
+    def add_data_row():
+        score, mode, _ = solar_health()
+        row = ft.DataRow(cells=[
+            ft.DataCell(ft.Text(f"{sim.hour:02d}:{sim.minute:02d}", size=12, color=TEXT_SECONDARY)),
+            ft.DataCell(ft.Text(f"{sim.power_kw:.2f}", size=12, color=ACCENT)),
+            ft.DataCell(ft.Text(f"{sim.irradiance:.0f}", size=12, color="#F59E0B")),
+            ft.DataCell(ft.Text(f"{sim.efficiency:.1f}%", size=12, color=PRIMARY)),
+            ft.DataCell(ft.Text(f"{sim.cell_temp:.1f}", size=12, color=ERROR)),
+            ft.DataCell(ft.Text(f"{sim.grid_export:.2f}", size=12, color=SECONDARY)),
+            ft.DataCell(ft.Text(str(score), size=12, color=PRIMARY if score >= 68 else ACCENT)),
+        ])
+        data_records["rows"].append(row)
+        if len(data_records["rows"]) > 12:
+            data_records["rows"].pop(0)
+        if dt_ref.current:
+            dt_ref.current.rows = list(data_records["rows"])
 
     stats_row1 = ft.Row(spacing=10, controls=[
         stat_card(ft.Icons.FLASH_ON,        ACCENT,    "#1a1400",
@@ -469,6 +551,7 @@ def AdvancedSolarView(page: ft.Page):
         sim.time_speed = speeds.get(int(float(e.control.value)), 60)
         if speed_lbl.current:
             speed_lbl.current.value = f"{int(float(e.control.value))}x"
+        show_snack("Solar simulation speed updated", ACCENT)
         page.update()
 
     def on_weather(e):
@@ -479,12 +562,14 @@ def AdvancedSolarView(page: ft.Page):
                 "☀️ Sunny" if w < 0.2 else
                 "⛅ Partly" if w < 0.5 else
                 "☁️ Cloudy" if w < 0.8 else "🌧️ Rainy")
+        show_snack("Weather model updated successfully", SECONDARY)
         page.update()
 
     def on_panels(e):
         sim.active_panels = int(float(e.control.value))
         if panels_lbl.current:
             panels_lbl.current.value = f"{sim.active_panels} panels"
+        show_snack("Active panel count updated", PRIMARY)
         page.update()
 
     def on_pause(e):
@@ -515,6 +600,41 @@ def AdvancedSolarView(page: ft.Page):
             r_progress.current.value = 0.0
         if r_progress_lbl.current:
             r_progress_lbl.current.value = "0%"
+        page.update()
+
+    def on_pause(e):
+        sim.paused = not sim.paused
+        if pause_btn.current:
+            pause_btn.current.content = ft.Text("Resume" if sim.paused else "Pause")
+            pause_btn.current.style = ft.ButtonStyle(
+                bgcolor=SUCCESS if sim.paused else ACCENT,
+                color="#020818",
+                shape=ft.RoundedRectangleBorder(radius=9),
+                padding=ft.padding.symmetric(horizontal=20, vertical=12),
+                elevation=0,
+            )
+        show_snack("Simulation paused" if sim.paused else "Simulation resumed",
+                   SUCCESS if sim.paused else ACCENT)
+        page.update()
+
+    def on_reset(e):
+        sim.reset()
+        sim.paused = True
+        if pause_btn.current:
+            pause_btn.current.content = ft.Text("Resume")
+            pause_btn.current.style = ft.ButtonStyle(
+                bgcolor=SUCCESS,
+                color="#020818",
+                shape=ft.RoundedRectangleBorder(radius=9),
+                padding=ft.padding.symmetric(horizontal=20, vertical=12),
+                elevation=0,
+            )
+        if r_progress.current:
+            r_progress.current.value = 0.0
+        if r_progress_lbl.current:
+            r_progress_lbl.current.value = "0%"
+        add_data_row()
+        show_snack("Solar simulation reset successfully", SUCCESS)
         page.update()
 
     controls_card = ft.Container(
@@ -989,12 +1109,354 @@ def AdvancedSolarView(page: ft.Page):
         ],
     )
 
+    notice_banner = ft.Container(
+        ref=r_notice_box,
+        visible=False,
+        bgcolor=f"{PRIMARY}18",
+        border=ft.border.all(1, f"{PRIMARY}66"),
+        border_radius=10,
+        padding=ft.padding.symmetric(horizontal=14, vertical=10),
+        content=ft.Row(spacing=10, controls=[
+            ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=PRIMARY, size=18),
+            ft.Text("", ref=r_notice_txt, size=13,
+                    weight=ft.FontWeight.W_600, color=PRIMARY),
+        ]),
+    )
+
+    ai_pulse_card = ft.Container(
+        bgcolor=BG_CARD,
+        border_radius=16,
+        border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=22, color="#00000055", offset=ft.Offset(0, 7)),
+        padding=ft.padding.all(20),
+        content=ft.Column(spacing=14, controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(spacing=10, controls=[
+                        ft.Container(
+                            width=38, height=38, border_radius=10,
+                            bgcolor=f"{PRIMARY}18",
+                            border=ft.border.all(1, f"{PRIMARY}55"),
+                            content=ft.Icon(ft.Icons.AUTO_AWESOME, color=PRIMARY, size=19),
+                            alignment=ft.Alignment(0, 0),
+                        ),
+                        ft.Column(spacing=2, controls=[
+                            ft.Text("Solar AI Pulse", size=15,
+                                    weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                            ft.Text("Live optimizer reading panel physics every tick",
+                                    size=11, color=TEXT_MUTED),
+                        ]),
+                    ]),
+                    ft.Container(
+                        bgcolor=f"{ACCENT}18",
+                        border=ft.border.all(1, f"{ACCENT}55"),
+                        border_radius=18,
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        content=ft.Text("", ref=r_ai_score, size=14,
+                                        weight=ft.FontWeight.BOLD, color=ACCENT),
+                    ),
+                ],
+            ),
+            ft.ProgressBar(ref=r_ai_bar, value=0.0, color=PRIMARY, bgcolor="#0d2235", height=9),
+            ft.Row(spacing=12, controls=[
+                ft.Container(
+                    expand=True, bgcolor="#071523", border_radius=12,
+                    border=ft.border.all(1, BORDER),
+                    padding=ft.padding.all(14),
+                    content=ft.Column(spacing=5, controls=[
+                        ft.Text("Operating Mode", size=11, color=TEXT_MUTED),
+                        ft.Text("", ref=r_ai_mode, size=14,
+                                weight=ft.FontWeight.BOLD, color=PRIMARY),
+                    ]),
+                ),
+                ft.Container(
+                    expand=True, bgcolor="#071523", border_radius=12,
+                    border=ft.border.all(1, BORDER),
+                    padding=ft.padding.all(14),
+                    content=ft.Column(spacing=5, controls=[
+                        ft.Text("Performance Ratio", size=11, color=TEXT_MUTED),
+                        ft.Text("", ref=r_pr, size=14,
+                                weight=ft.FontWeight.BOLD, color=SECONDARY),
+                    ]),
+                ),
+                ft.Container(
+                    expand=True, bgcolor="#071523", border_radius=12,
+                    border=ft.border.all(1, BORDER),
+                    padding=ft.padding.all(14),
+                    content=ft.Column(spacing=5, controls=[
+                        ft.Text("Heat Loss", size=11, color=TEXT_MUTED),
+                        ft.Text("", ref=r_heat_loss, size=14,
+                                weight=ft.FontWeight.BOLD, color=ERROR),
+                    ]),
+                ),
+                ft.Container(
+                    expand=True, bgcolor="#071523", border_radius=12,
+                    border=ft.border.all(1, BORDER),
+                    padding=ft.padding.all(14),
+                    content=ft.Column(spacing=5, controls=[
+                        ft.Text("Availability", size=11, color=TEXT_MUTED),
+                        ft.Text("", ref=r_availability, size=14,
+                                weight=ft.FontWeight.BOLD, color=PRIMARY),
+                    ]),
+                ),
+            ]),
+            ft.Container(
+                bgcolor="#061b18",
+                border=ft.border.all(1, f"{PRIMARY}44"),
+                border_radius=12,
+                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                content=ft.Row(spacing=10, controls=[
+                    ft.Icon(ft.Icons.TIPS_AND_UPDATES_OUTLINED, color=PRIMARY, size=18),
+                    ft.Text("", ref=r_ai_action, expand=True, size=12,
+                            color=TEXT_SECONDARY),
+                ]),
+            ),
+        ]),
+    )
+
+    data_table = ft.DataTable(
+        ref=dt_ref,
+        bgcolor=BG_CARD,
+        border=ft.border.all(0, "transparent"),
+        border_radius=12,
+        horizontal_lines=ft.BorderSide(1, BORDER),
+        heading_row_color=f"{ACCENT}11",
+        heading_row_height=42,
+        data_row_min_height=38,
+        data_row_max_height=42,
+        column_spacing=20,
+        columns=[
+            ft.DataColumn(ft.Text("Time", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+            ft.DataColumn(ft.Text("Power", size=12, weight=ft.FontWeight.BOLD, color=ACCENT)),
+            ft.DataColumn(ft.Text("Irradiance", size=12, weight=ft.FontWeight.BOLD, color="#F59E0B")),
+            ft.DataColumn(ft.Text("Eff", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY)),
+            ft.DataColumn(ft.Text("Temp", size=12, weight=ft.FontWeight.BOLD, color=ERROR)),
+            ft.DataColumn(ft.Text("Export", size=12, weight=ft.FontWeight.BOLD, color=SECONDARY)),
+            ft.DataColumn(ft.Text("AI", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY)),
+        ],
+        rows=[],
+    )
+
+    telemetry_card = ft.Container(
+        bgcolor=BG_CARD,
+        border_radius=16,
+        border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=22, color="#00000055", offset=ft.Offset(0, 7)),
+        padding=ft.padding.all(20),
+        content=ft.Column(spacing=12, controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(spacing=10, controls=[
+                        ft.Icon(ft.Icons.TABLE_CHART_OUTLINED, color=ACCENT, size=18),
+                        ft.Text("Realtime Solar Telemetry", size=15,
+                                weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                    ]),
+                    ft.Row(spacing=8, controls=[
+                        ft.ElevatedButton(
+                            "Snapshot",
+                            icon=ft.Icons.CAMERA_ALT_OUTLINED,
+                            bgcolor=f"{PRIMARY}22",
+                            color=PRIMARY,
+                            style=ft.ButtonStyle(
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                elevation=0,
+                            ),
+                            on_click=lambda e: (add_data_row(), show_snack("Solar snapshot captured successfully", PRIMARY)),
+                        ),
+                        ft.OutlinedButton(
+                            "Export",
+                            icon=ft.Icons.DOWNLOAD,
+                            style=ft.ButtonStyle(
+                                color=SECONDARY,
+                                side=ft.BorderSide(1, SECONDARY),
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                            on_click=lambda e: show_snack("Solar telemetry export completed successfully", SECONDARY),
+                        ),
+                    ]),
+                ],
+            ),
+            ft.Container(
+                border=ft.border.all(1, BORDER),
+                border_radius=12,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                height=250,
+                content=ft.ListView(controls=[data_table], spacing=0, auto_scroll=True),
+            ),
+        ]),
+    )
+
+    def open_sheet():
+        bottom_sheet.open = True
+        page.update()
+
+    def close_sheet():
+        bottom_sheet.open = False
+        page.update()
+
+    bottom_sheet = ft.BottomSheet(
+        open=False,
+        bgcolor=BG_CARD,
+        content=ft.Container(
+            padding=ft.padding.all(24),
+            content=ft.Column(tight=True, spacing=16, controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Solar Command Center", size=17,
+                                weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                        ft.IconButton(icon=ft.Icons.CLOSE, icon_color=TEXT_MUTED,
+                                      tooltip="Close", on_click=lambda e: close_sheet()),
+                    ],
+                ),
+                ft.Divider(color=BORDER, height=1),
+                ft.Row(spacing=10, controls=[
+                    ft.ElevatedButton(
+                        "Boost Scan", icon=ft.Icons.AUTO_AWESOME,
+                        bgcolor=PRIMARY, color="#040d1a", expand=True,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                        on_click=lambda e: show_snack("AI solar scan completed successfully", PRIMARY),
+                    ),
+                    ft.OutlinedButton(
+                        "Export", icon=ft.Icons.DOWNLOAD,
+                        expand=True,
+                        style=ft.ButtonStyle(
+                            color=SECONDARY,
+                            side=ft.BorderSide(1, SECONDARY),
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                        ),
+                        on_click=lambda e: show_snack("Solar report export completed successfully", SECONDARY),
+                    ),
+                    ft.ElevatedButton(
+                        "Maintenance", icon=ft.Icons.BUILD_CIRCLE,
+                        bgcolor=ACCENT, color="#040d1a", expand=True,
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+                        on_click=lambda e: show_snack("Maintenance workflow opened successfully", ACCENT),
+                    ),
+                ]),
+            ]),
+        ),
+    )
+    page.overlay.append(bottom_sheet)
+
+    page.snack_bar = ft.SnackBar(
+        content=ft.Text(""),
+        bgcolor=PRIMARY,
+        behavior=ft.SnackBarBehavior.FLOATING,
+        duration=2200,
+    )
+
+    now_str = time.strftime("%d %b %Y")
+    page.appbar = ft.AppBar(
+        leading=ft.Container(
+            padding=ft.padding.only(left=8),
+            content=ft.Container(
+                width=32, height=32, border_radius=8,
+                bgcolor=f"{ACCENT}22",
+                border=ft.border.all(1, f"{ACCENT}44"),
+                content=ft.Icon(ft.Icons.WB_SUNNY_OUTLINED, color=ACCENT, size=18),
+                alignment=ft.Alignment(0, 0),
+            ),
+        ),
+        leading_width=50,
+        title=ft.Column(spacing=1, controls=[
+            ft.Text("EnergyOS Solar Lab", size=15,
+                    weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+            ft.Text(f"Physics realtime - {now_str}", size=11, color=TEXT_MUTED),
+        ]),
+        center_title=False,
+        bgcolor=BG_CARD,
+        elevation=0,
+        actions=[
+            ft.MenuBar(
+                style=ft.MenuStyle(
+                    bgcolor=ft.Colors.TRANSPARENT,
+                    elevation=0,
+                    padding=ft.padding.symmetric(horizontal=4),
+                ),
+                controls=[
+                    ft.SubmenuButton(
+                        content=ft.Row(spacing=4, controls=[
+                            ft.Icon(ft.Icons.TUNE, color=TEXT_SECONDARY, size=16),
+                            ft.Text("Solar", color=TEXT_SECONDARY, size=13),
+                        ]),
+                        style=ft.ButtonStyle(
+                            bgcolor={ft.ControlState.HOVERED: f"{ACCENT}18"},
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                        controls=[
+                            ft.MenuItemButton(
+                                content=ft.Text("Run Scan", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.AUTO_AWESOME, color=PRIMARY, size=16),
+                                on_click=lambda e: show_snack("Solar scan completed successfully", PRIMARY),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Export Data", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.DOWNLOAD_OUTLINED, color=SECONDARY, size=16),
+                                on_click=lambda e: show_snack("Solar data export completed successfully", SECONDARY),
+                            ),
+                            ft.MenuItemButton(
+                                content=ft.Text("Open Commands", color=TEXT_PRIMARY),
+                                leading=ft.Icon(ft.Icons.FLASH_ON, color=ACCENT, size=16),
+                                on_click=lambda e: open_sheet(),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            ft.IconButton(
+                icon=ft.Icons.REFRESH_ROUNDED,
+                icon_color=PRIMARY,
+                tooltip="Refresh",
+                on_click=lambda e: (add_data_row(), show_snack("Solar view refreshed successfully", PRIMARY)),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.NOTIFICATIONS_OUTLINED,
+                icon_color=TEXT_SECONDARY,
+                tooltip="Alerts",
+                on_click=lambda e: show_snack("Panel 15 requires maintenance", ACCENT),
+            ),
+            ft.Container(width=8),
+        ],
+    )
+
+    page.bottom_appbar = ft.BottomAppBar(
+        bgcolor=BG_CARD,
+        content=ft.Row(
+            alignment=ft.MainAxisAlignment.SPACE_AROUND,
+            controls=[
+                ft.IconButton(icon=ft.Icons.HOME_ROUNDED, icon_color=TEXT_SECONDARY,
+                              tooltip="Dashboard", on_click=lambda e: show_snack("Dashboard shortcut", PRIMARY)),
+                ft.IconButton(icon=ft.Icons.WB_SUNNY_OUTLINED, icon_color=ACCENT,
+                              tooltip="Solar", on_click=lambda e: show_snack("Solar lab is live", ACCENT)),
+                ft.Container(width=56),
+                ft.IconButton(icon=ft.Icons.TABLE_CHART_OUTLINED, icon_color=TEXT_SECONDARY,
+                              tooltip="Telemetry", on_click=lambda e: show_snack("Telemetry stream is live", SECONDARY)),
+                ft.IconButton(icon=ft.Icons.SETTINGS_OUTLINED, icon_color=TEXT_SECONDARY,
+                              tooltip="Settings", on_click=lambda e: show_snack("Solar settings ready", TEXT_SECONDARY)),
+            ],
+        ),
+    )
+
+    page.floating_action_button = ft.FloatingActionButton(
+        icon=ft.Icons.FLASH_ON,
+        bgcolor=ACCENT,
+        foreground_color="#040d1a",
+        tooltip="Solar commands",
+        on_click=lambda e: open_sheet(),
+    )
+    page.floating_action_button_location = ft.FloatingActionButtonLocation.CENTER_DOCKED
+
     body = ft.Column(
         spacing=16, scroll=ft.ScrollMode.AUTO, expand=True,
         controls=[
             header,
+            notice_banner,
             stats_row1,
             stats_row2,
+            ai_pulse_card,
             controls_card,
             ft.Row(spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.START,
@@ -1003,7 +1465,8 @@ def AdvancedSolarView(page: ft.Page):
             ft.Row(spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.START,
                    controls=[panels_card, maint_card]),
-            ft.Container(height=20),
+            telemetry_card,
+            ft.Container(height=82),
         ],
     )
 
@@ -1067,6 +1530,94 @@ def AdvancedSolarView(page: ft.Page):
     threading.Thread(target=live_loop, daemon=True).start()
     page.on_disconnect = lambda e: stop_event.set()
 
+    def update_live_ui(add_row=False):
+        def s(ref, val):
+            if ref.current:
+                ref.current.value = val
+
+        s(r_power,   f"{sim.power_kw:.2f}")
+        s(r_eff,     f"{sim.efficiency:.1f}")
+        s(r_yield,   f"{sim.daily_kwh:.2f}")
+        s(r_monthly, f"{sim.monthly_kwh:.1f}")
+        s(r_temp,    f"{sim.cell_temp:.1f}")
+        s(r_volt,    f"{sim.voltage:.1f}")
+        s(r_curr,    f"{sim.current:.2f}")
+        s(r_irr,     f"{sim.irradiance:.0f}")
+        s(r_co2,     f"{sim.co2_kg:.2f}")
+        s(r_export,  f"{sim.grid_export:.2f}")
+        s(r_load,    f"{sim.home_load:.1f}")
+        s(r_batt_pct,f"{sim.battery:.0f}")
+        s(r_time,    f"{sim.hour:02d}:{sim.minute:02d}")
+        s(r_weather, weather_label())
+
+        if r_progress.current:
+            r_progress.current.value = sim.cycle_progress / 100.0
+        if r_progress_lbl.current:
+            r_progress_lbl.current.value = f"{int(sim.cycle_progress)}%"
+
+        svg, xs, W2, _ = build_power_chart(sim, hover_state["i"])
+        hover_state.update(xs=xs, W=W2)
+        if r_chart.current:
+            r_chart.current.src = _enc(svg)
+        if r_gauge_e.current:
+            r_gauge_e.current.src = _enc(
+                build_gauge(sim.efficiency, 25, "Efficiency", "%", PRIMARY))
+        if r_gauge_t.current:
+            r_gauge_t.current.src = _enc(
+                build_gauge(sim.cell_temp, 80, "Temp", "C", ACCENT))
+        if r_gauge_i.current:
+            r_gauge_i.current.src = _enc(
+                build_gauge(sim.irradiance, 1100, "Irr", "W/m2", SECONDARY))
+        if r_batt_g.current:
+            r_batt_g.current.src = _enc(build_battery_gauge(sim.battery))
+
+        score, mode, action = solar_health()
+        if r_ai_score.current:
+            r_ai_score.current.value = f"{score}%"
+            r_ai_score.current.color = PRIMARY if score >= 68 else ACCENT
+        if r_ai_mode.current:
+            r_ai_mode.current.value = mode
+        if r_ai_action.current:
+            r_ai_action.current.value = action
+        if r_ai_bar.current:
+            r_ai_bar.current.value = score / 100.0
+            r_ai_bar.current.color = PRIMARY if score >= 68 else ACCENT
+
+        expected = max(0.1, sim.active_panels * sim.PANEL_WATT / 1000.0 * max(0.05, sim.irradiance / 1000.0))
+        pr = max(0, min(100, sim.power_kw / expected * 100))
+        heat_loss = max(0, (sim.cell_temp - 25) * abs(sim.TEMP_COEFF) * 100)
+        availability = max(0, min(100, sim.active_panels / sim.PANEL_COUNT * 100))
+        s(r_pr, f"{pr:.0f}%")
+        s(r_heat_loss, f"{heat_loss:.1f}%")
+        s(r_availability, f"{availability:.0f}%")
+
+        if live_seq["v"] % 8 == 0:
+            for idx, ref in enumerate(panel_refs):
+                if ref.current:
+                    h = sim.panel_health[idx]
+                    color = PRIMARY if h == 0 else (WARNING if h == 1 else ERROR)
+                    ref.current.shadow = ft.BoxShadow(
+                        blur_radius=12 + (live_seq["v"] % 3) * 3,
+                        color=f"{color}33",
+                        offset=ft.Offset(0, 3),
+                    )
+
+        if add_row:
+            add_data_row()
+        page.update()
+
+    async def solar_live_stream():
+        while not stop_event.is_set():
+            try:
+                await asyncio.sleep(1.0)
+                live_seq["v"] += 1
+                sim.tick()
+                update_live_ui(add_row=live_seq["v"] % 2 == 0)
+            except Exception:
+                pass
+
+    page.run_task(solar_live_stream)
+
     def _init():
         try:
             def s(ref, val):
@@ -1094,6 +1645,7 @@ def AdvancedSolarView(page: ft.Page):
             pass
 
     threading.Timer(0.3, _init).start()
+    threading.Timer(0.4, lambda: update_live_ui(add_row=True)).start()
 
     return ft.Container(
         expand=True, padding=ft.padding.all(20),
