@@ -1,10 +1,32 @@
 import asyncio
+import base64
+import webbrowser
 import flet as ft
-from database.db import login_user
+from database.db import login_user, register_user
 from assets.styles import *
 
 
-def LoginView(page: ft.Page, user_data: dict = {}):
+def LoginView(page: ft.Page, user_data: dict = None):
+    if user_data is None:
+        user_data = {}
+
+    def svg_data_uri(svg: str) -> str:
+        return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("utf-8")
+
+    google_icon_src = svg_data_uri("""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.3-1.5 3.9-5.5 3.9-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3.3 14.7 2.4 12 2.4 6.9 2.4 2.8 6.5 2.8 11.6S6.9 20.8 12 20.8c6.9 0 9.1-4.8 9.1-7.3 0-.5 0-.9-.1-1.3z"/>
+  <path fill="#34A853" d="M3.8 7.3l3.2 2.3c.9-1.8 2.8-3 5-3 1.9 0 3.2.8 3.9 1.5l2.7-2.6C16.9 3.3 14.7 2.4 12 2.4 8.3 2.4 5.1 4.5 3.8 7.3z"/>
+  <path fill="#4A90E2" d="M12 20.8c2.6 0 4.8-.9 6.4-2.5l-3-2.4c-.8.6-1.9 1-3.4 1-3.9 0-5.3-2.6-5.5-3.9l-3.1 2.4c1.3 2.8 4.4 5.4 8.6 5.4z"/>
+  <path fill="#FBBC05" d="M3.8 15.5l3.1-2.4c-.2-.5-.3-1-.3-1.5s.1-1 .3-1.5L3.8 7.7c-.6 1.2-1 2.5-1 3.9s.4 2.7 1 3.9z"/>
+</svg>
+""")
+
+    github_icon_src = svg_data_uri("""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="#111827" d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.93c.58.1.79-.25.79-.56v-1.98c-3.2.7-3.87-1.37-3.87-1.37-.52-1.32-1.27-1.67-1.27-1.67-1.04-.7.08-.69.08-.69 1.15.08 1.76 1.17 1.76 1.17 1.02 1.75 2.68 1.25 3.34.96.1-.74.4-1.25.73-1.54-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.28 1.17-3.08-.12-.29-.5-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.18-1.49 3.14-1.18 3.14-1.18.62 1.59.24 2.76.12 3.05.73.8 1.17 1.82 1.17 3.08 0 4.43-2.69 5.4-5.25 5.69.42.36.79 1.06.79 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5z"/>
+</svg>
+""")
 
     email_field = ft.TextField(
         hint_text="your@email.com",
@@ -75,16 +97,41 @@ def LoginView(page: ft.Page, user_data: dict = {}):
             show_error("Password must be at least 6 characters.")
             return
 
+        # Demo account bootstrap
+        if email == "demo@energy.com" and password == "123456":
+            register_user("Demo User", "demo@energy.com", "123456")
+
         success, result = login_user(email, password)
 
         if success:
             user_data["id"]    = result["id"]
             user_data["name"]  = result["name"]
             user_data["email"] = result["email"]
-            asyncio.create_task(page.push_route("/dashboard"))
+            print(f"Login successful for {email}, user ID: {result['id']}")
+            page.run_task(page.push_route, "/dashboard")
         else:
-            show_error("No account found with this email and password. "
-                       "Please check your credentials or sign up.")
+            print(f"Login failed for {email}: {result}")
+            show_error(
+                "No account found with this email and password. "
+                "Please check your credentials or sign up.\n\n"
+                "Demo account: demo@energy.com / 123456"
+            )
+
+    def open_external(url: str):
+        try:
+            page.launch_url(url)
+        except Exception:
+            pass
+        try:
+            webbrowser.open_new_tab(url)
+        except Exception:
+            pass
+
+    def open_google(e):
+        open_external("https://www.google.com")
+
+    def open_github(e):
+        open_external("https://github.com")
 
     left_panel = ft.Container(
         width=420,
@@ -278,15 +325,15 @@ def LoginView(page: ft.Page, user_data: dict = {}):
                                     ft.TextButton(
                                         "Forgot Password?",
                                         style=ft.ButtonStyle(color=PRIMARY),
-                                        on_click=lambda e: asyncio.create_task(page.push_route("/forgot")),
+                                        on_click=lambda e: page.run_task(page.push_route, "/forgot"),
                                     ),
                                 ]
                             ),
 
                             error_container,
 
-                            ft.Button(
-                                content="SIGN IN",
+                            ft.ElevatedButton(
+                                "SIGN IN",
                                 on_click=do_login,
                                 style=ft.ButtonStyle(
                                     bgcolor=PRIMARY,
@@ -314,29 +361,67 @@ def LoginView(page: ft.Page, user_data: dict = {}):
                                 spacing=12,
                                 controls=[
                                     ft.OutlinedButton(
-                                        "G  Google",
-                                        style=ft.ButtonStyle(
-                                            side=ft.BorderSide(1, "#0d2235"),
-                                            shape=ft.RoundedRectangleBorder(
-                                                radius=12),
-                                            padding=ft.padding.symmetric(
-                                                vertical=14, horizontal=20),
-                                            bgcolor="#050e1c",
-                                            color=TEXT_SECONDARY,
+                                        content=ft.Row(
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            spacing=8,
+                                            controls=[
+                                                ft.Container(
+                                                    width=28,
+                                                    height=28,
+                                                    border_radius=14,
+                                                    bgcolor="#ffffff",
+                                                    border=ft.border.all(1, "#e5e7eb"),
+                                                    alignment=ft.Alignment(0, 0),
+                                                    content=ft.Image(
+                                                        src=google_icon_src,
+                                                        width=18,
+                                                        height=18,
+                                                        fit=ft.BoxFit.CONTAIN,
+                                                    ),
+                                                ),
+                                                ft.Text("Google", color="#111827", size=15, weight=ft.FontWeight.W_600),
+                                            ],
                                         ),
+                                        style=ft.ButtonStyle(
+                                            side=ft.BorderSide(1, "#d1d5db"),
+                                            shape=ft.RoundedRectangleBorder(radius=12),
+                                            padding=ft.padding.symmetric(vertical=16, horizontal=20),
+                                            bgcolor="#ffffff",
+                                        ),
+                                        on_click=open_google,
+                                        height=60,
                                         expand=True,
                                     ),
                                     ft.OutlinedButton(
-                                        "GitHub",
-                                        style=ft.ButtonStyle(
-                                            side=ft.BorderSide(1, "#0d2235"),
-                                            shape=ft.RoundedRectangleBorder(
-                                                radius=12),
-                                            padding=ft.padding.symmetric(
-                                                vertical=14, horizontal=20),
-                                            bgcolor="#050e1c",
-                                            color=TEXT_SECONDARY,
+                                        content=ft.Row(
+                                            alignment=ft.MainAxisAlignment.CENTER,
+                                            spacing=8,
+                                            controls=[
+                                                ft.Container(
+                                                    width=28,
+                                                    height=28,
+                                                    border_radius=14,
+                                                    bgcolor="#ffffff",
+                                                    border=ft.border.all(1, "#e5e7eb"),
+                                                    alignment=ft.Alignment(0, 0),
+                                                    content=ft.Image(
+                                                        src=github_icon_src,
+                                                        width=18,
+                                                        height=18,
+                                                        fit=ft.BoxFit.CONTAIN,
+                                                    ),
+                                                ),
+                                                ft.Text("GitHub", color="#111827", size=15, weight=ft.FontWeight.W_600),
+                                            ],
                                         ),
+                                        style=ft.ButtonStyle(
+                                            side=ft.BorderSide(1, "#d1d5db"),
+                                            shape=ft.RoundedRectangleBorder(radius=12),
+                                            padding=ft.padding.symmetric(vertical=16, horizontal=20),
+                                            bgcolor="#ffffff",
+                                        ),
+                                        on_click=open_github,
+                                        height=60,
                                         expand=True,
                                     ),
                                 ]
@@ -350,7 +435,7 @@ def LoginView(page: ft.Page, user_data: dict = {}):
                                     ft.TextButton(
                                         "Sign Up",
                                         style=ft.ButtonStyle(color=PRIMARY),
-                                        on_click=lambda e: asyncio.create_task(page.push_route("/register")),
+                                        on_click=lambda e: page.run_task(page.push_route, "/register"),
                                     ),
                                 ]
                             ),
