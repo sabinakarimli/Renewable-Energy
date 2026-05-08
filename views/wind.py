@@ -4,72 +4,165 @@ import threading
 import time
 import base64
 import math
+import requests
+import uuid
+from datetime import datetime
 from assets.styles import *
 
 
-class WindSimulation:
-    def __init__(self):
-        self.wind_speed     = 14.2
-        self.power_output   = 61.3
-        self.daily_yield    = 1245.0
-        self.direction_deg  = 225.0
-        self.air_pressure   = 1013.0
-        self.humidity       = 65.0
-        self.temperature    = 18.5
-        self.gust_speed     = 18.4
+API_URL = "http://127.0.0.1:8000"
+FALLBACK_API_URL = "http://127.0.0.1:8001"
 
-        self.t1_rpm    = 18.0
+
+class WindDataManager:
+    def __init__(self):
+        print("[WIND] Initializing WindDataManager...", flush=True)
+        self.wind_records = []
+        self.user_id = "user1"
+        self.load_data()
+        print("[WIND] WindDataManager initialized successfully", flush=True)
+        
+        # Current values for display
+        self.wind_speed = 14.2
+        self.power_output = 61.3
+        self.daily_yield = 1245.0
+        self.direction_deg = 225.0
+        self.air_pressure = 1013.0
+        self.humidity = 65.0
+        self.temperature = 18.5
+        self.gust_speed = 18.4
+        self.t1_rpm = 18.0
         self.t1_output = 32.5
         self.t1_uptime = 99.2
-
-        self.t2_rpm    = 16.0
+        self.t2_rpm = 16.0
         self.t2_output = 28.8
         self.t2_uptime = 98.7
-
-        self.t3_rpm    = 0.0
-        self.t3_output = 0.0
-        self.t3_uptime = 0.0
-
         self.history_power = [random.uniform(30, 75) for _ in range(48)]
-        self.history_speed = [random.uniform(8, 20)  for _ in range(48)]
+        self.history_speed = [random.uniform(8, 20) for _ in range(48)]
+
+    def api_call(self, method, endpoint, data=None):
+        for base_url in (API_URL, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}{endpoint}"
+                print(f"[WIND API] {method} {url}", flush=True)
+                if data:
+                    print(f"[WIND API] Data: {data}", flush=True)
+                
+                if method == "GET":
+                    r = requests.get(url, timeout=3)
+                elif method == "POST":
+                    r = requests.post(url, json=data, timeout=3)
+                elif method == "PUT":
+                    r = requests.put(url, json=data, timeout=3)
+                elif method == "DELETE":
+                    r = requests.delete(url, timeout=3)
+                else:
+                    continue
+                
+                print(f"[WIND API] Response: {r.status_code} - {r.text[:200]}", flush=True)
+                
+                if r.status_code in (200, 201):
+                    return r.json() if r.text else {"status": "ok"}
+                else:
+                    print(f"[WIND API] ERROR {r.status_code}: {r.text}", flush=True)
+            except Exception as e:
+                print(f"[WIND API] Exception on {base_url}: {e}", flush=True)
+        
+        print(f"[WIND API] All endpoints failed for {method} {endpoint}", flush=True)
+        return None
+
+    def load_data(self):
+        """GET - Fetch wind records from server"""
+        print(f"[WIND CRUD] Loading data for user_id={self.user_id}", flush=True)
+        result = self.api_call("GET", f"/wind/records?user_id={self.user_id}&limit=100")
+        print(f"[WIND CRUD] Load result: {type(result)} - {result}", flush=True)
+        if result:
+            self.wind_records = result if isinstance(result, list) else []
+            print(f"[WIND CRUD] Loaded {len(self.wind_records)} records", flush=True)
+        else:
+            print(f"[WIND CRUD] No records loaded, keeping empty list", flush=True)
+        
+    def create_record(self, turbine_id, power_output, wind_speed, efficiency):
+        """CREATE - Add new wind record"""
+        data = {
+            "id": str(uuid.uuid4()),
+            "user_id": self.user_id,
+            "turbine_id": turbine_id,
+            "power_output": float(power_output),
+            "wind_speed": float(wind_speed),
+            "efficiency": float(efficiency),
+            "status": "active",
+            "timestamp": datetime.now().isoformat(),
+            "turbine_model": "WEC-3000",
+            "blade_angle": 45.0,
+            "maintenance_hours": 0,
+            "location_coordinates": "0.0,0.0",
+            "wind_direction": self._dir_name(self.direction_deg)
+        }
+        print(f"[WIND CRUD] Creating record: {data}", flush=True)
+        result = self.api_call("POST", "/wind/records", data)
+        print(f"[WIND CRUD] Create result: {result}", flush=True)
+        if result:
+            self.wind_records.append(data)
+            return data["id"]
+        return None
+
+    def update_record(self, record_id, **kwargs):
+        """UPDATE - Modify wind record"""
+        data = kwargs
+        data["id"] = record_id
+        data["user_id"] = self.user_id
+        data["timestamp"] = datetime.now().isoformat()
+        print(f"[WIND CRUD] Updating record {record_id}: {data}", flush=True)
+        result = self.api_call("PUT", f"/wind/records/{record_id}", data)
+        print(f"[WIND CRUD] Update result: {result}", flush=True)
+        return result is not None
+
+    def delete_record(self, record_id):
+        """DELETE - Remove wind record"""
+        print(f"[WIND CRUD] Deleting record {record_id}", flush=True)
+        result = self.api_call("DELETE", f"/wind/records/{record_id}", None)
+        print(f"[WIND CRUD] Delete result: {result}", flush=True)
+        self.wind_records = [r for r in self.wind_records if r.get("id") != record_id]
+        return result is not None
 
     def tick(self):
-        self.wind_speed    = max(0, min(30,   self.wind_speed   + random.uniform(-0.8, 0.8)))
-        self.gust_speed    = max(self.wind_speed, self.wind_speed + random.uniform(0, 5))
-        self.power_output  = max(0, min(120,  self.power_output + random.uniform(-2.5, 2.5)))
-        self.daily_yield  += random.uniform(0.1, 0.6)
+        self.wind_speed = max(0, min(30, self.wind_speed + random.uniform(-0.8, 0.8)))
+        self.gust_speed = max(self.wind_speed, self.wind_speed + random.uniform(0, 5))
+        self.power_output = max(0, min(120, self.power_output + random.uniform(-2.5, 2.5)))
+        self.daily_yield += random.uniform(0.1, 0.6)
         self.direction_deg = (self.direction_deg + random.uniform(-4, 4)) % 360
-        self.air_pressure  = max(990, min(1030, self.air_pressure + random.uniform(-0.4, 0.4)))
-        self.humidity      = max(30,  min(95,   self.humidity    + random.uniform(-1.2, 1.2)))
-        self.temperature   = max(5,   min(35,   self.temperature + random.uniform(-0.4, 0.4)))
-
-        self.t1_rpm    = max(5,  min(25, self.t1_rpm    + random.uniform(-0.8, 0.8)))
-        self.t1_output = max(5,  min(50, self.t1_output + random.uniform(-2.0, 2.0)))
+        self.air_pressure = max(990, min(1030, self.air_pressure + random.uniform(-0.4, 0.4)))
+        self.humidity = max(30, min(95, self.humidity + random.uniform(-1.2, 1.2)))
+        self.temperature = max(5, min(35, self.temperature + random.uniform(-0.4, 0.4)))
+        self.t1_rpm = max(5, min(25, self.t1_rpm + random.uniform(-0.8, 0.8)))
+        self.t1_output = max(5, min(50, self.t1_output + random.uniform(-2.0, 2.0)))
         self.t1_uptime = max(95, min(100, self.t1_uptime + random.uniform(-0.08, 0.08)))
-
-        self.t2_rpm    = max(5,  min(25, self.t2_rpm    + random.uniform(-0.8, 0.8)))
-        self.t2_output = max(5,  min(50, self.t2_output + random.uniform(-2.0, 2.0)))
+        self.t2_rpm = max(5, min(25, self.t2_rpm + random.uniform(-0.8, 0.8)))
+        self.t2_output = max(5, min(50, self.t2_output + random.uniform(-2.0, 2.0)))
         self.t2_uptime = max(95, min(100, self.t2_uptime + random.uniform(-0.08, 0.08)))
-
         self.history_power.append(round(self.power_output, 1))
         self.history_speed.append(round(self.wind_speed, 1))
         if len(self.history_power) > 60: self.history_power.pop(0)
         if len(self.history_speed) > 60: self.history_speed.pop(0)
 
+    def _dir_name(self, deg):
+        dirs = ["N","NE","E","SE","S","SW","W","NW"]
+        return dirs[int((deg + 22.5) / 45) % 8]
+
     @property
     def direction_name(self):
-        dirs = ["N","NE","E","SE","S","SW","W","NW"]
-        return dirs[int((self.direction_deg + 22.5) / 45) % 8]
+        return self._dir_name(self.direction_deg)
 
     @property
     def wind_status(self):
-        if self.wind_speed >= 12:  return "Optimal", PRIMARY
-        elif self.wind_speed >= 6: return "Good",    SECONDARY
-        else:                      return "Low",      WARNING
+        if self.wind_speed >= 12: return "Optimal", PRIMARY
+        elif self.wind_speed >= 6: return "Good", SECONDARY
+        else: return "Low", WARNING
 
     @property
     def pressure_status(self):
-        if 1000 <= self.air_pressure <= 1025: return "Normal",   PRIMARY
+        if 1000 <= self.air_pressure <= 1025: return "Normal", PRIMARY
         return "Abnormal", WARNING
 
     @property
@@ -78,7 +171,7 @@ class WindSimulation:
         return "High", WARNING
 
 
-SIM = WindSimulation()
+SIM = WindDataManager()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -730,6 +823,181 @@ def WindView(page: ft.Page):
         ],
     )
 
+    # ── CRUD Section ───────────────────────────────────────────────────────────
+    record_list = ft.Ref[ft.Column]()
+    turbine_id_field = ft.Ref[ft.TextField]()
+    power_field = ft.Ref[ft.TextField]()
+    wind_speed_field = ft.Ref[ft.TextField]()
+    efficiency_field = ft.Ref[ft.TextField]()
+    status_msg = ft.Ref[ft.Text]()
+    api_status = ft.Ref[ft.Text]()
+    api_status_dot = ft.Ref[ft.Container]()
+
+    # Test API connection on startup
+    def test_api_connection():
+        """Test if the API server is reachable"""
+        print("[WIND] Testing API connection...", flush=True)
+        for base_url in (API_URL, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}/wind/records?user_id=test&limit=1"
+                print(f"[WIND] Trying {url}...", flush=True)
+                r = requests.get(url, timeout=3)
+                print(f"[WIND] Connection test result: {r.status_code}", flush=True)
+                if r.status_code in (200, 422):  # 422 means server is running but validation failed (OK for test)
+                    return base_url, True
+            except Exception as e:
+                print(f"[WIND] Connection failed on {base_url}: {e}", flush=True)
+        return None, False
+
+    def show_status(msg, color=PRIMARY):
+        if status_msg.current:
+            status_msg.current.value = msg
+            status_msg.current.color = color
+            page.update()
+
+    def update_api_status(connected, server_url=None):
+        if api_status.current and api_status_dot.current:
+            if connected:
+                api_status.current.value = f"API Connected ({server_url})"
+                api_status.current.color = "#00C853"
+                api_status_dot.current.bgcolor = "#00C853"
+            else:
+                api_status.current.value = "API Server NOT Running - Start comprehensive_api_server.py"
+                api_status.current.color = ERROR
+                api_status_dot.current.bgcolor = ERROR
+            page.update()
+
+    def refresh_records():
+        """READ - Refresh wind records list from server"""
+        print("[WIND CRUD] REFRESH button clicked, calling load_data...", flush=True)
+        SIM.load_data()
+        print(f"[WIND CRUD] Loaded {len(SIM.wind_records)} records from server", flush=True)
+        if record_list.current:
+            if not SIM.wind_records:
+                record_list.current.controls = [
+                    ft.Text("No records on server yet. Create one above.", size=11, color=TEXT_MUTED)
+                ]
+            else:
+                controls = []
+                for idx, rec in enumerate(SIM.wind_records[:10]):  # Show last 10
+                    tid = rec.get("turbine_id", "N/A")
+                    pwr = rec.get("power_output", 0)
+                    spd = rec.get("wind_speed", 0)
+                    rec_id = rec.get("id")
+                    ts = rec.get("timestamp", "")[:19]
+                    
+                    def make_delete(rid=rec_id):
+                        def on_delete(e):
+                            print(f"[WIND CRUD] Deleting record {rid}", flush=True)
+                            result = SIM.delete_record(rid)
+                            if result:
+                                show_status("Record deleted from server", "#00C853")
+                            else:
+                                show_status("Failed to delete record. Check API server.", ERROR)
+                            refresh_records()
+                        return on_delete
+
+                    controls.append(
+                        ft.Container(
+                            bgcolor="#050e1c",
+                            border=ft.border.all(1, BORDER),
+                            border_radius=10,
+                            padding=ft.padding.all(12),
+                            content=ft.Row(
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                controls=[
+                                    ft.Column(
+                                        spacing=4,
+                                        controls=[
+                                            ft.Text(f"Turbine: {tid}", size=12, color=TEXT_PRIMARY, weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"Power: {pwr:.1f} kW | Speed: {spd:.1f} m/s | Time: {ts}", size=11, color=TEXT_SECONDARY),
+                                        ]
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.Icons.DELETE,
+                                        icon_color=ERROR,
+                                        tooltip="Delete this record",
+                                        on_click=make_delete()
+                                    )
+                                ]
+                            )
+                        )
+                    )
+                record_list.current.controls = controls
+            page.update()
+            show_status(f"Loaded {len(SIM.wind_records)} records from server", PRIMARY)
+
+    def on_create_record(e):
+        """CREATE - Add new wind record to server"""
+        try:
+            print("[WIND CRUD] CREATE button clicked", flush=True)
+            tid = turbine_id_field.current.value or "T-001"
+            pwr = float(power_field.current.value or SIM.power_output)
+            spd = float(wind_speed_field.current.value or SIM.wind_speed)
+            eff = float(efficiency_field.current.value or 85.0)
+            
+            print(f"[WIND CRUD] Creating record: turbine={tid}, power={pwr}, speed={spd}, eff={eff}", flush=True)
+            rec_id = SIM.create_record(tid, pwr, spd, eff)
+            print(f"[WIND CRUD] create_record returned: {rec_id}", flush=True)
+            if rec_id:
+                show_status(f"Record created successfully (ID: {rec_id[:8]}...)", SUCCESS)
+                turbine_id_field.current.value = ""
+                power_field.current.value = ""
+                wind_speed_field.current.value = ""
+                efficiency_field.current.value = ""
+                refresh_records()
+            else:
+                show_status("Failed to create record. Is the API server running? Check terminal for details.", ERROR)
+                print("[WIND CRUD] CREATE FAILED - API server not reachable or returned error", flush=True)
+        except Exception as ex:
+            show_status(f"Error creating record: {str(ex)}", ERROR)
+            print(f"[WIND CRUD] CREATE Exception: {ex}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+    crud_section = ft.Container(
+        bgcolor=BG_CARD,
+        border_radius=18,
+        border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=22, color="#00000066", offset=ft.Offset(0,6)),
+        padding=ft.padding.all(22),
+        content=ft.Column(spacing=14, controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Text("Wind Records Management (API CRUD)", size=15, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                    ft.Row(spacing=6, controls=[
+                        ft.Container(ref=api_status_dot, width=10, height=10, border_radius=5, bgcolor=WARNING),
+                        ft.Text("Checking API...", ref=api_status, size=11, color=TEXT_MUTED),
+                    ])
+                ]
+            ),
+            ft.Row(spacing=12, controls=[
+                ft.TextField(ref=turbine_id_field, label="Turbine ID", hint_text="T-001", width=150),
+                ft.TextField(ref=power_field, label="Power (kW)", keyboard_type=ft.KeyboardType.NUMBER, width=130),
+                ft.TextField(ref=wind_speed_field, label="Speed (m/s)", keyboard_type=ft.KeyboardType.NUMBER, width=130),
+                ft.TextField(ref=efficiency_field, label="Efficiency (%)", keyboard_type=ft.KeyboardType.NUMBER, width=140),
+                ft.ElevatedButton("CREATE Record", bgcolor=PRIMARY, color="#040d1a", on_click=on_create_record, width=140),
+                ft.ElevatedButton("REFRESH List", bgcolor=SECONDARY, color="#040d1a", on_click=lambda e: refresh_records(), width=140),
+            ]),
+            ft.Text("", ref=status_msg, size=12, color=PRIMARY),
+            ft.Text("Recent Records (Server):", size=12, color=TEXT_SECONDARY, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                ref=record_list,
+                bgcolor="#040d1a",
+                border_radius=12,
+                padding=ft.padding.all(12),
+                height=200,
+                content=ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, controls=[
+                    ft.Text("Loading records...", size=11, color=TEXT_MUTED)
+                ])
+            ),
+        ]),
+    )
+    
+    # Add CRUD section to body
+    body.controls.insert(2, crud_section)
+
     # ══════════════════════════════════════════════════════════════════════════
     #  LIVE LOOP — 1 second
     # ══════════════════════════════════════════════════════════════════════════
@@ -833,9 +1101,27 @@ def WindView(page: ft.Page):
             if ref_hum_stat.current:
                 ref_hum_stat.current.value = hs
                 ref_hum_stat.current.color = hc
+            
+            # Test API connection
+            server_url, connected = test_api_connection()
+            update_api_status(connected, server_url)
+            
+            # Load records only if connected
+            if connected:
+                refresh_records()
+            else:
+                print("[WIND] API server not reachable, CRUD operations disabled", flush=True)
+                if record_list.current:
+                    record_list.current.controls = [
+                        ft.Text("API server is not running!", size=12, color=ERROR, weight=ft.FontWeight.BOLD),
+                        ft.Text("Start the server with: python comprehensive_api_server.py", size=11, color=TEXT_MUTED),
+                    ]
+                page.update()
+            
             page.update()
         except Exception:
-            pass
+            import traceback
+            traceback.print_exc()
 
     threading.Timer(0.3, _init).start()
 

@@ -5,7 +5,15 @@ import base64
 import math
 import threading
 import time
+import uuid
+import requests
+import json
+from datetime import datetime
 from assets.styles import *
+
+API_URL = "http://127.0.0.1:8000"
+FALLBACK_API_URL = "http://127.0.0.1:8001"
+USER_ID = "user1"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DATA GENERATION
@@ -390,6 +398,117 @@ def build_savings(labels, savings, hover_i=-1):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CRUD SYSTEM FOR ANALYTICS RECORDS
+# ══════════════════════════════════════════════════════════════════════════════
+class AnalyticsCRUD:
+    def __init__(self, user_id=USER_ID):
+        self.user_id = user_id
+        self.records = []
+        self.api_status = "offline"
+        self.api_url = API_URL
+
+    def log(self, operation, detail=""):
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] [ANALYTICS CRUD] [{operation.upper()}] {detail}", flush=True)
+
+    def api_call(self, method, endpoint, data=None):
+        for base_url in (self.api_url, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}{endpoint}"
+                self.log("API", f"{method} {url}")
+                if method == "GET":
+                    r = requests.get(url, timeout=3)
+                elif method == "POST":
+                    r = requests.post(url, json=data, timeout=3)
+                elif method == "PUT":
+                    r = requests.put(url, json=data, timeout=3)
+                elif method == "DELETE":
+                    r = requests.delete(url, timeout=3)
+                else:
+                    continue
+                self.log("API", f"Response: {r.status_code} - {r.text[:300]}")
+                if r.status_code in (200, 201, 204):
+                    self.api_url = base_url
+                    self.api_status = "online"
+                    return r.json() if r.text else {"status": "ok"}
+                else:
+                    self.log("ERROR", f"{r.status_code}: {r.text}")
+            except Exception as e:
+                self.log("EXCEPTION", f"Failed on {base_url}: {e}")
+        self.api_status = "offline"
+        return None
+
+    def load_records(self, search=""):
+        self.log("READ", f"Loading records (search='{search}')")
+        if search:
+            result = self.api_call("GET", f"/analytics/by-metric/{search}?user_id={self.user_id}")
+        else:
+            result = self.api_call("GET", f"/analytics?user_id={self.user_id}&limit=100")
+        if result and isinstance(result, list):
+            self.records = result
+            self.log("READ", f"Loaded {len(self.records)} records")
+        else:
+            self.log("READ", "No records found or error")
+            self.records = []
+        return self.records
+
+    def create_record(self, metric_name, value, unit, category="", source="manual", confidence=0.85):
+        self.log("CREATE", f"Creating: {metric_name}={value} {unit}")
+        data = {
+            "id": str(uuid.uuid4()),
+            "user_id": self.user_id,
+            "metric_name": metric_name,
+            "value": float(value),
+            "unit": unit,
+            "timestamp": datetime.now().isoformat(),
+            "category": category,
+            "source": source,
+            "confidence_level": float(confidence),
+            "trend_direction": random.choice(["up", "down", "stable"]),
+            "comparison_period": "last_month",
+        }
+        result = self.api_call("POST", "/analytics", data)
+        if result:
+            self.records.append(data)
+            self.log("CREATE", f"Success! ID: {data['id']}")
+            return data
+        self.log("CREATE", "Failed!")
+        return None
+
+    def update_record(self, record_id, **kwargs):
+        self.log("UPDATE", f"Updating {record_id}: {kwargs}")
+        existing = None
+        for r in self.records:
+            if r.get("id") == record_id:
+                existing = r
+                break
+        if not existing:
+            self.log("UPDATE", f"Record {record_id} not found locally")
+            return False
+        data = {**existing, **kwargs, "id": record_id, "user_id": self.user_id}
+        result = self.api_call("PUT", f"/analytics/{record_id}", data)
+        if result:
+            for i, r in enumerate(self.records):
+                if r.get("id") == record_id:
+                    self.records[i].update(kwargs)
+                    break
+            self.log("UPDATE", "Success!")
+            return True
+        self.log("UPDATE", "Failed!")
+        return False
+
+    def delete_record(self, record_id):
+        self.log("DELETE", f"Deleting {record_id}")
+        result = self.api_call("DELETE", f"/analytics/{record_id}")
+        if result:
+            self.records = [r for r in self.records if r.get("id") != record_id]
+            self.log("DELETE", "Success!")
+            return True
+        self.log("DELETE", "Failed!")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MAIN VIEW
 # ══════════════════════════════════════════════════════════════════════════════
 def AnalyticsView(page: ft.Page):
@@ -424,6 +543,27 @@ def AnalyticsView(page: ft.Page):
     btn_y = ft.Ref[ft.Button]()
     data_records = {"rows": []}
     live_seq = {"v": 0}
+
+    crud = AnalyticsCRUD()
+    crud_search = ft.Ref[ft.TextField]()
+    crud_metric = ft.Ref[ft.TextField]()
+    crud_value = ft.Ref[ft.TextField]()
+    crud_unit = ft.Ref[ft.TextField]()
+    crud_category = ft.Ref[ft.TextField]()
+    crud_confidence = ft.Ref[ft.TextField]()
+    crud_api_status_dot = ft.Ref[ft.Container]()
+    crud_api_status_label = ft.Ref[ft.Text]()
+
+    edit_dlg_id = ft.Ref[ft.TextField]()
+    edit_dlg_metric = ft.Ref[ft.TextField]()
+    edit_dlg_value = ft.Ref[ft.TextField]()
+    edit_dlg_unit = ft.Ref[ft.TextField]()
+    edit_dlg_category = ft.Ref[ft.TextField]()
+
+    delete_confirm_dlg = ft.Ref[ft.AlertDialog]()
+    edit_dlg = ft.Ref[ft.AlertDialog]()
+    add_dlg = ft.Ref[ft.AlertDialog]()
+    delete_target_id = {"v": None, "v_name": ""}
 
     BAR_H = 320
     DON_H = 300
@@ -619,6 +759,165 @@ def AnalyticsView(page: ft.Page):
 
     threading.Thread(target=live_loop, daemon=True).start()
     page.on_disconnect = lambda e: _stop.set()
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  CRUD FUNCTIONS
+    # ═══════════════════════════════════════════════════════════════════
+    def update_api_status():
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] [ANALYTICS CRUD] API Status: {crud.api_status}", flush=True)
+        if crud_api_status_dot.current:
+            crud_api_status_dot.current.bgcolor = PRIMARY if crud.api_status == "online" else ERROR
+        if crud_api_status_label.current:
+            crud_api_status_label.current.value = f"API: {crud.api_status.upper()}"
+            crud_api_status_label.current.color = PRIMARY if crud.api_status == "online" else ERROR
+        page.update()
+
+    def reload_crud_records(search_text=""):
+        crud.log("RELOAD", f"Reloading records with search='{search_text}'")
+        records = crud.load_records(search_text)
+        build_crud_table(records)
+        update_api_status()
+
+    def build_crud_table(records):
+        if crud_data_table.current:
+            crud_data_table.current.rows.clear()
+            for item in records:
+                cells = [
+                    ft.DataCell(ft.Text(str(item.get("metric_name", "")), size=12, color=TEXT_PRIMARY, width=140)),
+                    ft.DataCell(ft.Text(f"{item.get('value', 0):,.1f}", size=12, color=PRIMARY, width=80)),
+                    ft.DataCell(ft.Text(str(item.get('unit', '')), size=12, color=TEXT_SECONDARY, width=60)),
+                    ft.DataCell(ft.Text(str(item.get('category', 'N/A')), size=12, color=TEXT_SECONDARY, width=100)),
+                    ft.DataCell(ft.Text(str(item.get('trend_direction', '')), size=12,
+                                       color=PRIMARY if item.get('trend_direction') == 'up' else ERROR if item.get('trend_direction') == 'down' else ACCENT, width=70)),
+                    ft.DataCell(ft.Text(str(item.get('timestamp', ''))[:19], size=11, color=TEXT_MUTED, width=140)),
+                    ft.DataCell(ft.Row(spacing=4, controls=[
+                        ft.IconButton(icon=ft.Icons.EDIT, icon_color=PRIMARY, tooltip='Edit',
+                                     on_click=lambda e, d=item: open_edit_dialog(d)),
+                        ft.IconButton(icon=ft.Icons.DELETE, icon_color=ERROR, tooltip='Delete',
+                                     on_click=lambda e, d=item: open_delete_confirm(d)),
+                    ]), width=90),
+                ]
+                crud_data_table.current.rows.append(ft.DataRow(cells=cells))
+            page.update()
+
+    def close_add_dialog(e):
+        crud.log("DIALOG", "Closing add dialog")
+        if add_dlg.current:
+            add_dlg.current.open = False
+            add_dialog_widget.open = False
+        page.update()
+
+    def close_edit_dialog(e):
+        crud.log("DIALOG", "Closing edit dialog")
+        if edit_dlg.current:
+            edit_dlg.current.open = False
+            edit_dialog_widget.open = False
+        page.update()
+
+    def close_delete_dialog(e):
+        crud.log("DIALOG", "Closing delete dialog")
+        if delete_confirm_dlg.current:
+            delete_confirm_dlg.current.open = False
+            delete_confirm_widget.open = False
+        page.update()
+
+    def save_new_record(e):
+        metric = crud_metric.current.value.strip() if crud_metric.current else ''
+        value = crud_value.current.value.strip() if crud_value.current else ''
+        unit = crud_unit.current.value.strip() if crud_unit.current else ''
+        category = crud_category.current.value.strip() if crud_category.current else ''
+        confidence = crud_confidence.current.value.strip() if crud_confidence.current else '0.85'
+        if not metric or not value or not unit:
+            show_snack('Please fill in Metric, Value, and Unit!', ERROR)
+            return
+        try:
+            val = float(value)
+            conf = float(confidence)
+        except ValueError:
+            show_snack('Value and Confidence must be numbers!', ERROR)
+            return
+        result = crud.create_record(metric, val, unit, category, confidence=conf)
+        if result:
+            show_snack(f'Record created: {metric} = {val}', PRIMARY)
+            if crud_metric.current: crud_metric.current.value = ''
+            if crud_value.current: crud_value.current.value = ''
+            if crud_unit.current: crud_unit.current.value = ''
+            if crud_category.current: crud_category.current.value = ''
+            close_add_dialog(e)
+            reload_crud_records()
+        else:
+            show_snack('Failed to create record!', ERROR)
+
+    def save_edit_record(e):
+        rid = edit_dlg_id.current.value if edit_dlg_id.current else ''
+        metric = edit_dlg_metric.current.value.strip() if edit_dlg_metric.current else ''
+        value = edit_dlg_value.current.value.strip() if edit_dlg_value.current else ''
+        unit = edit_dlg_unit.current.value.strip() if edit_dlg_unit.current else ''
+        category = edit_dlg_category.current.value.strip() if edit_dlg_category.current else ''
+        if not metric or not value or not unit:
+            show_snack('Please fill in all fields!', ERROR)
+            return
+        try:
+            val = float(value)
+        except ValueError:
+            show_snack('Value must be a number!', ERROR)
+            return
+        success = crud.update_record(rid, metric_name=metric, value=val, unit=unit, category=category)
+        if success:
+            show_snack(f'Record updated: {metric} = {val}', PRIMARY)
+            close_edit_dialog(e)
+            reload_crud_records()
+        else:
+            show_snack('Failed to update record!', ERROR)
+
+    def confirm_delete(e):
+        rid = delete_target_id['v']
+        rname = delete_target_id['v_name']
+        success = crud.delete_record(rid)
+        if success:
+            show_snack(f'Deleted: {rname}', ERROR)
+        else:
+            show_snack('Failed to delete record!', ERROR)
+        close_delete_dialog(e)
+        reload_crud_records()
+
+    def open_edit_dialog(row_data):
+        crud.log("DIALOG", f"Opening edit dialog for: {row_data.get('metric_name', '')}")
+        if edit_dlg_id.current:
+            edit_dlg_id.current.value = str(row_data.get('id', ''))
+        if edit_dlg_metric.current:
+            edit_dlg_metric.current.value = row_data.get('metric_name', '')
+        if edit_dlg_value.current:
+            edit_dlg_value.current.value = str(row_data.get('value', ''))
+        if edit_dlg_unit.current:
+            edit_dlg_unit.current.value = row_data.get('unit', '')
+        if edit_dlg_category.current:
+            edit_dlg_category.current.value = row_data.get('category', '')
+        if edit_dlg.current:
+            edit_dlg.current.open = True
+        edit_dialog_widget.open = True
+        page.update()
+
+    def open_delete_confirm(row_data):
+        crud.log("DIALOG", f"Opening delete confirm for: {row_data.get('metric_name', '')}")
+        delete_target_id['v'] = row_data.get('id', '')
+        delete_target_id['v_name'] = row_data.get('metric_name', 'Unknown')
+        if delete_confirm_dlg.current:
+            delete_confirm_dlg.current.title = ft.Text(f"Delete '{delete_target_id['v_name']}'?", color=ERROR)
+            delete_confirm_dlg.current.open = True
+        delete_confirm_widget.open = True
+        page.update()
+
+    def open_add_dialog(e):
+        crud.log("DIALOG", "Opening add dialog")
+        if add_dlg.current:
+            add_dlg.current.open = True
+        add_dialog_widget.open = True
+        page.update()
+
+    def on_crud_search_change(e):
+        reload_crud_records(e.control.value.strip())
 
     # ── Hover handlers ─────────────────────────────────────────────────────────
     def _nearest(ex, ww, xs, W2):
@@ -914,6 +1213,194 @@ def AnalyticsView(page: ft.Page):
         rows=[],
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  CRUD UI SECTION
+    # ═══════════════════════════════════════════════════════════════════
+    crud_data_table = ft.Ref[ft.DataTable]()
+
+    crud_search_widget = ft.TextField(
+        label="Search by metric name...",
+        width=280,
+        prefix_icon=ft.Icons.SEARCH,
+        on_change=lambda e: on_crud_search_change(e),
+        text_size=13,
+    )
+
+    crud_section = ft.Container(
+        bgcolor=BG_CARD,
+        border_radius=14,
+        border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=24, color="#00000055", offset=ft.Offset(0, 8)),
+        padding=ft.padding.all(20),
+        content=ft.Column(spacing=14, controls=[
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Row(spacing=10, controls=[
+                        ft.Icon(ft.Icons.STORAGE, color=PRIMARY, size=18),
+                        ft.Text("Analytics Records (CRUD)", size=15,
+                                weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                        ft.Container(
+                            ref=crud_api_status_dot,
+                            width=10, height=10, border_radius=5,
+                            bgcolor=ERROR,
+                            animate=ft.Animation(duration=300, curve=ft.AnimationCurve.EASE_OUT),
+                        ),
+                        ft.Text("API: OFFLINE", ref=crud_api_status_label, size=12,
+                                color=ERROR, weight=ft.FontWeight.BOLD),
+                    ]),
+                    ft.Row(spacing=8, controls=[
+                        crud_search_widget,
+                        ft.ElevatedButton(
+                            "Add Record",
+                            icon=ft.Icons.ADD,
+                            bgcolor=PRIMARY,
+                            color="#040d1a",
+                            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
+                            on_click=open_add_dialog,
+                        ),
+                        ft.OutlinedButton(
+                            "Refresh",
+                            icon=ft.Icons.REFRESH,
+                            style=ft.ButtonStyle(
+                                color=SECONDARY,
+                                side=ft.BorderSide(1, SECONDARY),
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                            on_click=lambda e: reload_crud_records(),
+                        ),
+                    ]),
+                ],
+            ),
+            ft.Container(
+                border=ft.border.all(1, BORDER),
+                border_radius=12,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                height=280,
+                content=ft.ListView(
+                    controls=[
+                        ft.DataTable(
+                            ref=crud_data_table,
+                            heading_row_color=f"{PRIMARY}11",
+                            heading_row_height=40,
+                            data_row_min_height=40,
+                            data_row_max_height=44,
+                            column_spacing=12,
+                            columns=[
+                                ft.DataColumn(ft.Text("Metric", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY)),
+                                ft.DataColumn(ft.Text("Value", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                                ft.DataColumn(ft.Text("Unit", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                                ft.DataColumn(ft.Text("Category", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                                ft.DataColumn(ft.Text("Trend", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                                ft.DataColumn(ft.Text("Timestamp", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                                ft.DataColumn(ft.Text("Actions", size=12, weight=ft.FontWeight.BOLD, color=TEXT_SECONDARY)),
+                            ],
+                            rows=[],
+                        ),
+                    ],
+                    spacing=0,
+                ),
+            ),
+        ]),
+    )
+
+    # ── Add Record Dialog ─────────────────────────────────────────────
+    add_dialog_widget = ft.AlertDialog(
+        modal=True,
+        open=False,
+        title=ft.Row(spacing=10, controls=[
+            ft.Icon(ft.Icons.ADD_CIRCLE, color=PRIMARY, size=22),
+            ft.Text("Add Analytics Record", size=17, weight=ft.FontWeight.BOLD),
+        ]),
+        content=ft.Container(
+            width=360,
+            content=ft.Column(spacing=12, controls=[
+                ft.TextField(ref=crud_metric, label="Metric Name", prefix_icon=ft.Icons.LABEL, text_size=13),
+                ft.TextField(ref=crud_value, label="Value", prefix_icon=ft.Icons.TAG, keyboard_type=ft.KeyboardType.NUMBER, text_size=13),
+                ft.TextField(ref=crud_unit, label="Unit (e.g. kWh, %, kW)", prefix_icon=ft.Icons.BOLT, text_size=13),
+                ft.TextField(ref=crud_category, label="Category", prefix_icon=ft.Icons.CATEGORY, text_size=13),
+                ft.TextField(ref=crud_confidence, label="Confidence (0.0-1.0)", prefix_icon=ft.Icons.PERCENT, value="0.85", keyboard_type=ft.KeyboardType.NUMBER, text_size=13),
+            ]),
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=close_add_dialog),
+            ft.ElevatedButton("Save", icon=ft.Icons.SAVE, bgcolor=PRIMARY, color="#040d1a", on_click=save_new_record),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    if not hasattr(page, 'overlay'): page.overlay = []
+    for c in [ac for ac in page.overlay if isinstance(ac, ft.AlertDialog)]:
+        if 'Add Analytics Record' in str(c.title): page.overlay.remove(c)
+    page.overlay.append(add_dialog_widget)
+    add_dlg.current = add_dialog_widget
+
+    # ── Edit Record Dialog ─────────────────────────────────────────────
+    edit_dialog_widget = ft.AlertDialog(
+        modal=True,
+        open=False,
+        title=ft.Row(spacing=10, controls=[
+            ft.Icon(ft.Icons.EDIT, color=SECONDARY, size=22),
+            ft.Text("Edit Analytics Record", size=17, weight=ft.FontWeight.BOLD),
+        ]),
+        content=ft.Container(
+            width=360,
+            content=ft.Column(spacing=12, controls=[
+                ft.TextField(ref=edit_dlg_id, label="ID", read_only=True, text_size=12, disabled=True),
+                ft.TextField(ref=edit_dlg_metric, label="Metric Name", prefix_icon=ft.Icons.LABEL, text_size=13),
+                ft.TextField(ref=edit_dlg_value, label="Value", prefix_icon=ft.Icons.TAG, keyboard_type=ft.KeyboardType.NUMBER, text_size=13),
+                ft.TextField(ref=edit_dlg_unit, label="Unit", prefix_icon=ft.Icons.BOLT, text_size=13),
+                ft.TextField(ref=edit_dlg_category, label="Category", prefix_icon=ft.Icons.CATEGORY, text_size=13),
+            ]),
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=close_edit_dialog),
+            ft.ElevatedButton("Update", icon=ft.Icons.UPDATE, bgcolor=SECONDARY, color="#040d1a", on_click=save_edit_record),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    for c in [ec for ec in page.overlay if isinstance(ec, ft.AlertDialog)]:
+        if 'Edit Analytics Record' in str(c.title): page.overlay.remove(c)
+    page.overlay.append(edit_dialog_widget)
+    edit_dlg.current = edit_dialog_widget
+
+    # ── Delete Confirmation Dialog ─────────────────────────────────────
+    delete_confirm_widget = ft.AlertDialog(
+        modal=True,
+        open=False,
+        title=ft.Row(spacing=10, controls=[
+            ft.Icon(ft.Icons.WARNING, color=ERROR, size=22),
+            ft.Text("Confirm Delete", size=17, weight=ft.FontWeight.BOLD, color=ERROR),
+        ]),
+        content=ft.Container(
+            width=320,
+            content=ft.Column(spacing=10, controls=[
+                ft.Text("Are you sure you want to delete this record?", size=14, color=TEXT_PRIMARY),
+                ft.Container(
+                    bgcolor=f"{ERROR}11",
+                    border=ft.border.all(1, f"{ERROR}44"),
+                    border_radius=8,
+                    padding=ft.padding.all(12),
+                    content=ft.Text("This action cannot be undone!", size=13, color=ERROR, weight=ft.FontWeight.BOLD),
+                ),
+            ]),
+        ),
+        actions=[
+            ft.TextButton("Cancel", on_click=close_delete_dialog),
+            ft.ElevatedButton(
+                "Delete",
+                icon=ft.Icons.DELETE,
+                bgcolor=ERROR,
+                color="#ffffff",
+                on_click=confirm_delete,
+            ),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    for c in [dc for dc in page.overlay if isinstance(dc, ft.AlertDialog)]:
+        if 'Confirm Delete' in str(c.title) or 'Delete' in str(c.title): page.overlay.remove(c)
+    page.overlay.append(delete_confirm_widget)
+    delete_confirm_dlg.current = delete_confirm_widget
+
     data_section = ft.Container(
         bgcolor=BG_CARD,
         border_radius=14,
@@ -1050,145 +1537,21 @@ def AnalyticsView(page: ft.Page):
             ]),
         ),
     )
-    # Ensure page has overlay attribute before appending
     if not hasattr(page, 'overlay'):
         page.overlay = []
-    page.overlay.append(bottom_sheet)
+    existing_sheets = [c for c in page.overlay if isinstance(c, ft.BottomSheet)]
+    if not existing_sheets:
+        page.overlay.append(bottom_sheet)
 
     now_str = time.strftime("%d %b %Y")
-    page.appbar = ft.AppBar(
-        leading=ft.Container(
-            padding=ft.padding.only(left=8),
-            content=ft.Container(
-                width=32, height=32, border_radius=8,
-                bgcolor=f"{PRIMARY}22",
-                border=ft.border.all(1, f"{PRIMARY}44"),
-                content=ft.Icon(ft.Icons.ANALYTICS_OUTLINED, color=PRIMARY, size=18),
-                alignment=ft.Alignment(0, 0),
-            ),
-        ),
-        leading_width=50,
-        title=ft.Column(spacing=1, controls=[
-            ft.Text("EnergyOS Analytics", size=15,
-                    weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
-            ft.Text(f"Realtime intelligence - {now_str}", size=11, color=TEXT_MUTED),
-        ]),
-        center_title=False,
-        bgcolor=BG_CARD,
-        elevation=0,
-        actions=[
-            ft.MenuBar(
-                style=ft.MenuStyle(
-                    bgcolor=ft.Colors.TRANSPARENT,
-                    elevation=0,
-                    padding=ft.padding.symmetric(horizontal=4),
-                ),
-                controls=[
-                    ft.SubmenuButton(
-                        content=ft.Row(spacing=4, controls=[
-                            ft.Icon(ft.Icons.TUNE, color=TEXT_SECONDARY, size=16),
-                            ft.Text("Period", color=TEXT_SECONDARY, size=13),
-                        ]),
-                        style=ft.ButtonStyle(
-                            bgcolor={ft.ControlState.HOVERED: f"{PRIMARY}18"},
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        controls=[
-                            ft.MenuItemButton(
-                                content=ft.Text("Weekly", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.DATE_RANGE, color=PRIMARY, size=16),
-                                on_click=lambda e: set_period("weekly"),
-                            ),
-                            ft.MenuItemButton(
-                                content=ft.Text("Monthly", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.CALENDAR_MONTH, color=SECONDARY, size=16),
-                                on_click=lambda e: set_period("monthly"),
-                            ),
-                            ft.MenuItemButton(
-                                content=ft.Text("Yearly", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.QUERY_STATS, color=ACCENT, size=16),
-                                on_click=lambda e: set_period("yearly"),
-                            ),
-                        ],
-                    ),
-                    ft.SubmenuButton(
-                        content=ft.Row(spacing=4, controls=[
-                            ft.Icon(ft.Icons.MORE_HORIZ, color=TEXT_SECONDARY, size=16),
-                            ft.Text("Tools", color=TEXT_SECONDARY, size=13),
-                        ]),
-                        style=ft.ButtonStyle(
-                            bgcolor={ft.ControlState.HOVERED: f"{PRIMARY}18"},
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        controls=[
-                            ft.MenuItemButton(
-                                content=ft.Text("Open Actions", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.FLASH_ON, color=PRIMARY, size=16),
-                                on_click=lambda e: open_sheet(),
-                            ),
-                            ft.MenuItemButton(
-                                content=ft.Text("Export Data", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.DOWNLOAD_OUTLINED, color=SECONDARY, size=16),
-                                on_click=lambda e: show_snack("Export completed successfully", SECONDARY),
-                            ),
-                            ft.MenuItemButton(
-                                content=ft.Text("Clear Hover", color=TEXT_PRIMARY),
-                                leading=ft.Icon(ft.Icons.CLEAR_ALL, color=ACCENT, size=16),
-                                on_click=lambda e: (hover.update(bar=-1, yoy=-1, sav=-1), redraw()),
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            ft.IconButton(
-                icon=ft.Icons.REFRESH_ROUNDED,
-                icon_color=PRIMARY,
-                tooltip="Refresh",
-                on_click=lambda e: (push_live_record(), redraw(), show_snack("Analytics refreshed", PRIMARY)),
-            ),
-            ft.IconButton(
-                icon=ft.Icons.NOTIFICATIONS_OUTLINED,
-                icon_color=TEXT_SECONDARY,
-                tooltip="Alerts",
-                on_click=lambda e: show_snack("No analytics alerts", ACCENT),
-            ),
-            ft.Container(width=8),
-        ],
-    )
 
-    page.bottom_appbar = ft.BottomAppBar(
-        bgcolor=BG_CARD,
-        content=ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_AROUND,
-            controls=[
-                ft.IconButton(icon=ft.Icons.HOME_ROUNDED, icon_color=TEXT_SECONDARY,
-                              tooltip="Dashboard", on_click=lambda e: show_snack("Dashboard shortcut", PRIMARY)),
-                ft.IconButton(icon=ft.Icons.ANALYTICS_OUTLINED, icon_color=PRIMARY,
-                              tooltip="Analytics", on_click=lambda e: show_snack("Analytics live", SECONDARY)),
-                ft.Container(width=56),
-                ft.IconButton(icon=ft.Icons.TABLE_CHART_OUTLINED, icon_color=TEXT_SECONDARY,
-                              tooltip="Table", on_click=lambda e: show_snack("Live table is updating", PRIMARY)),
-                ft.IconButton(icon=ft.Icons.SETTINGS_OUTLINED, icon_color=TEXT_SECONDARY,
-                              tooltip="Settings", on_click=lambda e: show_snack("Analytics settings", TEXT_SECONDARY)),
-            ],
-        ),
-    )
-
-    page.floating_action_button = ft.FloatingActionButton(
-        icon=ft.Icons.FLASH_ON,
-        bgcolor=PRIMARY,
-        foreground_color="#040d1a",
-        tooltip="Analytics actions",
-        on_click=lambda e: open_sheet(),
-    )
-    page.floating_action_button_location = ft.FloatingActionButtonLocation.CENTER_DOCKED
-
-    page.snack_bar = ft.SnackBar(
-        content=ft.Text(""),
-        bgcolor=PRIMARY,
-        behavior=ft.SnackBarBehavior.FLOATING,
-        duration=2200,
-    )
+    if not page.snack_bar:
+        page.snack_bar = ft.SnackBar(
+            content=ft.Text(""),
+            bgcolor=PRIMARY,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            duration=2200,
+        )
 
     body = ft.Column(
         spacing=16, scroll=ft.ScrollMode.AUTO, expand=True,
@@ -1204,6 +1567,7 @@ def AnalyticsView(page: ft.Page):
             ft.Row(spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.START,
                    controls=[yoy_card, sav_card]),
+            crud_section,
             data_section,
             ft.Container(height=80),
         ],
@@ -1214,8 +1578,11 @@ def AnalyticsView(page: ft.Page):
             load_period("weekly")
             push_live_record()
             redraw()
-        except Exception:
-            pass
+            crud.log("INIT", "Initializing CRUD system...")
+            reload_crud_records()
+            crud.log("INIT", "CRUD system initialized!")
+        except Exception as e:
+            crud.log("INIT", f"Error during initialization: {e}")
 
     threading.Timer(0.3, _init).start()
 

@@ -1,5 +1,9 @@
 import flet as ft
+import requests
 from assets.styles import *
+from datetime import datetime, timedelta
+
+API_URL = "http://127.0.0.1:8001"
 
 
 def SettingsView(page: ft.Page, user_data: dict):

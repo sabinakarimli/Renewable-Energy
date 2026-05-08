@@ -86,7 +86,7 @@ async def main(page: ft.Page):
         protected = [
             "/dashboard", "/analytics", "/solar", "/wind",
             "/battery", "/grid", "/settings",
-            "/profile", "/ai", "/lab"
+            "/profile", "/ai"
         ]
 
         print(f"User data: {user_data}")
@@ -252,21 +252,6 @@ async def main(page: ft.Page):
                 # Replace the temporary view with the real one
                 page.views[-1] = view
                 print(f"Settings view added, total views: {len(page.views)}")
-
-            elif route == "/lab":
-                print("Creating lab view...")
-                # Add a temporary view first to prevent "views list is empty" error
-                temp_view = ft.View(route="/lab")
-                page.views.append(temp_view)
-                page.update()  # Update to establish the view
-                
-                from views.lab import LabView
-                lab_content = LabView(page)
-                view = get_sidebar_view("/lab", lab_content)
-                
-                # Replace the temporary view with the real one
-                page.views[-1] = view
-                print(f"Lab view added, total views: {len(page.views)}")
 
             else:
                 print(f"Unknown route: {route}, redirecting to login")

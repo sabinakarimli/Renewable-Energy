@@ -5,6 +5,11 @@ import time
 import base64
 from datetime import datetime
 from assets.styles import *
+import requests
+import uuid
+
+API_URL = "http://127.0.0.1:8000"
+FALLBACK_API_URL = "http://127.0.0.1:8001"
 
 
 class GridSalesSimulation:
@@ -51,6 +56,90 @@ class GridSalesSimulation:
         ]
         self.weekly_revenue = [18.4, 22.1, 19.8, 25.6, 23.2, 21.0, 10.2]
         self.weekly_export = [68.2, 82.1, 74.8, 95.6, 88.2, 76.0, 42.6]
+        self.sales_records = []
+        self.user_id = "user1"
+        self.load_data()
+
+    def api_call(self, method, endpoint, data=None):
+        for base_url in (API_URL, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}{endpoint}"
+                print(f"[GRID SALES API] {method} {url}", flush=True)
+                if data:
+                    print(f"[GRID SALES API] Data: {data}", flush=True)
+                
+                if method == "GET":
+                    r = requests.get(url, timeout=3)
+                elif method == "POST":
+                    r = requests.post(url, json=data, timeout=3)
+                elif method == "PUT":
+                    r = requests.put(url, json=data, timeout=3)
+                elif method == "DELETE":
+                    r = requests.delete(url, timeout=3)
+                else:
+                    continue
+                
+                print(f"[GRID SALES API] Response: {r.status_code} - {r.text[:200]}", flush=True)
+                
+                if r.status_code in (200, 201):
+                    return r.json() if r.text else {"status": "ok"}
+                else:
+                    print(f"[GRID SALES API] ERROR {r.status_code}: {r.text}", flush=True)
+            except Exception as e:
+                print(f"[GRID SALES API] Exception on {base_url}: {e}", flush=True)
+        
+        print(f"[GRID SALES API] All endpoints failed for {method} {endpoint}", flush=True)
+        return None
+
+    def load_data(self):
+        """GET - Fetch sales records from server"""
+        print(f"[GRID SALES CRUD] Loading data for user_id={self.user_id}", flush=True)
+        result = self.api_call("GET", f"/grid-sales/records?user_id={self.user_id}&limit=100")
+        print(f"[GRID SALES CRUD] Load result: {type(result)} - {result}", flush=True)
+        if result:
+            self.sales_records = result if isinstance(result, list) else []
+            print(f"[GRID SALES CRUD] Loaded {len(self.sales_records)} records", flush=True)
+        else:
+            print(f"[GRID SALES CRUD] No records loaded, keeping empty list", flush=True)
+
+    def create_record(self, kwh, price, revenue, status="Completed"):
+        """CREATE - Add new sales record"""
+        data = {
+            "id": str(uuid.uuid4()),
+            "user_id": self.user_id,
+            "kwh": float(kwh),
+            "price": float(price),
+            "revenue": float(revenue),
+            "status": status,
+            "time": datetime.now().strftime("%H:%M"),
+            "timestamp": datetime.now().isoformat(),
+        }
+        print(f"[GRID SALES CRUD] Creating record: {data}", flush=True)
+        result = self.api_call("POST", "/grid-sales/records", data)
+        print(f"[GRID SALES CRUD] Create result: {result}", flush=True)
+        if result:
+            self.sales_records.append(data)
+            return data["id"]
+        return None
+
+    def update_record(self, record_id, **kwargs):
+        """UPDATE - Modify sales record"""
+        data = kwargs
+        data["id"] = record_id
+        data["user_id"] = self.user_id
+        data["timestamp"] = datetime.now().isoformat()
+        print(f"[GRID SALES CRUD] Updating record {record_id}: {data}", flush=True)
+        result = self.api_call("PUT", f"/grid-sales/records/{record_id}", data)
+        print(f"[GRID SALES CRUD] Update result: {result}", flush=True)
+        return result is not None
+
+    def delete_record(self, record_id):
+        """DELETE - Remove sales record"""
+        print(f"[GRID SALES CRUD] Deleting record {record_id}", flush=True)
+        result = self.api_call("DELETE", f"/grid-sales/records/{record_id}", None)
+        print(f"[GRID SALES CRUD] Delete result: {result}", flush=True)
+        self.sales_records = [r for r in self.sales_records if r.get("id") != record_id]
+        return result is not None
 
     def tick(self):
         self.current_price = max(0.08, min(0.50, self.current_price + random.uniform(-0.005, 0.005)))
@@ -317,6 +406,118 @@ def GridSalesView(page: ft.Page):
     ref_weekly_chart = ft.Ref[ft.Image]()
     snack_ref = ft.Ref[ft.SnackBar]()
     dt_ref = ft.Ref[ft.DataTable]()
+    
+    # CRUD refs
+    record_list = ft.Ref[ft.Column]()
+    kwh_field = ft.Ref[ft.TextField]()
+    price_field = ft.Ref[ft.TextField]()
+    status_field = ft.Ref[ft.TextField]()
+    status_msg = ft.Ref[ft.Text]()
+    api_status = ft.Ref[ft.Text]()
+    api_status_dot = ft.Ref[ft.Container]()
+
+    # CRUD Functions
+    def test_api_connection():
+        print("[GRID SALES] Testing API connection...", flush=True)
+        for base_url in (API_URL, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}/grid-sales/records?user_id=test&limit=1"
+                print(f"[GRID SALES] Trying {url}...", flush=True)
+                r = requests.get(url, timeout=3)
+                print(f"[GRID SALES] Connection test result: {r.status_code}", flush=True)
+                if r.status_code in (200, 422):
+                    return base_url, True
+            except Exception as e:
+                print(f"[GRID SALES] Connection failed on {base_url}: {e}", flush=True)
+        return None, False
+
+    def show_status(msg, color=PRIMARY):
+        if status_msg.current:
+            status_msg.current.value = msg
+            status_msg.current.color = color
+            page.update()
+
+    def update_api_status(connected, server_url=None):
+        if api_status.current and api_status_dot.current:
+            if connected:
+                api_status.current.value = f"API Connected ({server_url})"
+                api_status.current.color = "#00C853"
+                api_status_dot.current.bgcolor = "#00C853"
+            else:
+                api_status.current.value = "API Server NOT Running - Start comprehensive_api_server.py"
+                api_status.current.color = ERROR
+                api_status_dot.current.bgcolor = ERROR
+            page.update()
+
+    def refresh_records():
+        print("[GRID SALES CRUD] REFRESH button clicked, calling load_data...", flush=True)
+        sim.load_data()
+        print(f"[GRID SALES CRUD] Loaded {len(sim.sales_records)} records from server", flush=True)
+        if record_list.current:
+            if not sim.sales_records:
+                record_list.current.controls = [
+                    ft.Text("No records on server yet. Create one above.", size=11, color=TEXT_MUTED)
+                ]
+            else:
+                controls = []
+                for rec in sim.sales_records[:10]:
+                    kwh = rec.get("kwh", 0)
+                    price = rec.get("price", 0)
+                    revenue = rec.get("revenue", 0)
+                    status = rec.get("status", "N/A")
+                    rec_id = rec.get("id")
+                    ts = rec.get("timestamp", "")[:19]
+                    
+                    def make_delete(rid=rec_id):
+                        def on_delete(e):
+                            print(f"[GRID SALES CRUD] Deleting record {rid}", flush=True)
+                            result = sim.delete_record(rid)
+                            if result:
+                                show_status("Record deleted from server", "#00C853")
+                            else:
+                                show_status("Failed to delete record. Check API server.", ERROR)
+                            refresh_records()
+                        return on_delete
+
+                    controls.append(
+                        ft.Container(
+                            bgcolor="#050e1c", border=ft.border.all(1, BORDER), border_radius=10,
+                            padding=ft.padding.all(12),
+                            content=ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
+                                ft.Column(spacing=4, controls=[
+                                    ft.Text(f"kWh: {kwh:.1f} | Price: ${price:.3f} | Revenue: ${revenue:.2f}", size=12, color=TEXT_PRIMARY, weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"Status: {status} | Time: {ts}", size=11, color=TEXT_SECONDARY),
+                                ]),
+                                ft.IconButton(icon=ft.Icons.DELETE, icon_color=ERROR, tooltip="Delete this record", on_click=make_delete()),
+                            ])
+                        )
+                    )
+                record_list.current.controls = controls
+            page.update()
+            show_status(f"Loaded {len(sim.sales_records)} records from server", PRIMARY)
+
+    def on_create_record(e):
+        try:
+            print("[GRID SALES CRUD] CREATE button clicked", flush=True)
+            kwh = float(kwh_field.current.value or sim.power_export)
+            price = float(price_field.current.value or sim.current_price)
+            revenue = kwh * price
+            status = status_field.current.value or "Completed"
+            print(f"[GRID SALES CRUD] Creating record: kwh={kwh}, price={price}, status={status}", flush=True)
+            rec_id = sim.create_record(kwh, price, revenue, status)
+            print(f"[GRID SALES CRUD] create_record returned: {rec_id}", flush=True)
+            if rec_id:
+                show_status(f"Record created successfully (ID: {rec_id[:8]}...)", SUCCESS)
+                kwh_field.current.value = ""
+                price_field.current.value = ""
+                status_field.current.value = ""
+                refresh_records()
+            else:
+                show_status("Failed to create record. Is the API server running?", ERROR)
+        except Exception as ex:
+            show_status(f"Error creating record: {str(ex)}", ERROR)
+            print(f"[GRID SALES CRUD] CREATE Exception: {ex}", flush=True)
+            import traceback; traceback.print_exc()
 
     snack = ft.SnackBar(
         ref=snack_ref, content=ft.Text("", color="white", weight=ft.FontWeight.W_600),
@@ -701,6 +902,37 @@ def GridSalesView(page: ft.Page):
         filter_btns[label] = btn
         return btn
 
+    # CRUD Section for Grid Sales Records
+    crud_section = ft.Container(
+        bgcolor=BG_CARD, border_radius=18, border=ft.border.all(1, BORDER),
+        shadow=ft.BoxShadow(blur_radius=22, color="#00000066", offset=ft.Offset(0, 6)),
+        padding=ft.padding.all(22),
+        content=ft.Column(spacing=14, controls=[
+            ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, controls=[
+                ft.Text("Grid Sales Records Management (API CRUD)", size=15, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY),
+                ft.Row(spacing=6, controls=[
+                    ft.Container(ref=api_status_dot, width=10, height=10, border_radius=5, bgcolor=WARNING),
+                    ft.Text("Checking API...", ref=api_status, size=11, color=TEXT_MUTED),
+                ])
+            ]),
+            ft.Row(spacing=12, controls=[
+                ft.TextField(ref=kwh_field, label="kWh", hint_text="10.5", width=120, keyboard_type=ft.KeyboardType.NUMBER),
+                ft.TextField(ref=price_field, label="Price ($/kWh)", hint_text="0.32", width=140, keyboard_type=ft.KeyboardType.NUMBER),
+                ft.TextField(ref=status_field, label="Status", hint_text="Completed", width=130),
+                ft.ElevatedButton("CREATE Record", bgcolor=SUCCESS, color="#040d1a", on_click=on_create_record, width=140),
+                ft.ElevatedButton("REFRESH List", bgcolor=SECONDARY, color="#040d1a", on_click=lambda e: refresh_records(), width=140),
+            ]),
+            ft.Text("", ref=status_msg, size=12, color=PRIMARY),
+            ft.Text("Recent Records (Server):", size=12, color=TEXT_SECONDARY, weight=ft.FontWeight.BOLD),
+            ft.Container(
+                ref=record_list, bgcolor="#040d1a", border_radius=12, padding=ft.padding.all(12), height=200,
+                content=ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, controls=[
+                    ft.Text("Loading records...", size=11, color=TEXT_MUTED)
+                ])
+            ),
+        ]),
+    )
+
     transactions_card = ft.Container(
         bgcolor=BG_CARD, border_radius=18, border=ft.border.all(1, BORDER),
         shadow=ft.BoxShadow(blur_radius=22, color="#00000066", offset=ft.Offset(0, 6)),
@@ -764,6 +996,7 @@ def GridSalesView(page: ft.Page):
         spacing=16, scroll=ft.ScrollMode.AUTO, expand=True,
         controls=[
             page_header, menu_bar, stats_row, tariff_card,
+            crud_section,
             price_chart_card, export_chart_card,
             ft.Row(spacing=14, vertical_alignment=ft.CrossAxisAlignment.START,
                    controls=[ft.Container(expand=True, content=transactions_card), monthly_card]),
@@ -795,7 +1028,7 @@ def GridSalesView(page: ft.Page):
             if ref_month_exp.current:
                 ref_month_exp.current.value = f"{sim.exported_month:.1f}"
             if ref_freq_bar.current:
-                pct = max(0, (sim.grid_frequency - 49.8) / 0.4) * 100
+                pct = max(0, ((sim.grid_frequency - 49.8) / 0.4) * 100)
                 ref_freq_bar.current.width = max(8, min(120, int(pct)))
                 ref_freq_bar.current.bgcolor = SUCCESS if abs(sim.grid_frequency - 50) < 0.05 else (WARNING if abs(sim.grid_frequency - 50) < 0.1 else ERROR)
             if ref_pulse.current:
@@ -825,9 +1058,16 @@ def GridSalesView(page: ft.Page):
             if ref_tariff.current: ref_tariff.current.value = sim.current_tariff
             if ref_month_rev.current: ref_month_rev.current.value = f"{sim.revenue_month:.2f}"
             if ref_month_exp.current: ref_month_exp.current.value = f"{sim.exported_month:.1f}"
+            
+            # Test API connection and load records
+            print("[GRID SALES] Initializing CRUD...", flush=True)
+            url, connected = test_api_connection()
+            update_api_status(connected, url)
+            refresh_records()
+            
             page.update()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[GRID SALES] Init error: {e}", flush=True)
 
     threading.Timer(0.3, init).start()
 

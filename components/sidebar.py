@@ -12,7 +12,6 @@ NAV_ITEMS = [
     (ft.Icons.BOLT,                  "Grid Sales",       "/grid"),
     (ft.Icons.DESCRIPTION_OUTLINED,  "Reports",          "/reports"),
     (ft.Icons.AUTO_AWESOME,          "AI Predictions",   "/ai"),
-    (ft.Icons.SCIENCE,               "Lab #9",           "/lab"),
     (ft.Icons.SETTINGS_OUTLINED,     "Settings",         "/settings"),
 ]
 

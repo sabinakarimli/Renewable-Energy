@@ -4,7 +4,14 @@ import threading
 import time
 import base64
 import math
+import requests
+import uuid
+from datetime import datetime
 from assets.styles import *
+
+API_URL = "http://127.0.0.1:8000"
+FALLBACK_API_URL = "http://127.0.0.1:8001"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,9 +48,96 @@ class SolarLiveData:
     
     # Panel status data
     panel_statuses = []
+    solar_records = []
+    user_id = "user1"
     
     def __init__(self):
         self.generate_panel_data()
+        self.load_data()
+    
+    def api_call(self, method, endpoint, data=None):
+        for base_url in (API_URL, FALLBACK_API_URL):
+            try:
+                url = f"{base_url}{endpoint}"
+                print(f"[SOLAR API] {method} {url}", flush=True)
+                if data:
+                    print(f"[SOLAR API] Data: {data}", flush=True)
+                
+                if method == "GET":
+                    r = requests.get(url, timeout=3)
+                elif method == "POST":
+                    r = requests.post(url, json=data, timeout=3)
+                elif method == "PUT":
+                    r = requests.put(url, json=data, timeout=3)
+                elif method == "DELETE":
+                    r = requests.delete(url, timeout=3)
+                else:
+                    continue
+                
+                print(f"[SOLAR API] Response: {r.status_code} - {r.text[:200]}", flush=True)
+                
+                if r.status_code in (200, 201):
+                    return r.json() if r.text else {"status": "ok"}
+                else:
+                    print(f"[SOLAR API] ERROR {r.status_code}: {r.text}", flush=True)
+            except Exception as e:
+                print(f"[SOLAR API] Exception on {base_url}: {e}", flush=True)
+        
+        print(f"[SOLAR API] All endpoints failed for {method} {endpoint}", flush=True)
+        return None
+
+    def load_data(self):
+        """GET - Fetch solar records from server"""
+        print(f"[SOLAR CRUD] Loading data for user_id={self.user_id}", flush=True)
+        result = self.api_call("GET", f"/solar/records?user_id={self.user_id}&limit=100")
+        print(f"[SOLAR CRUD] Load result: {type(result)} - {result}", flush=True)
+        if result:
+            self.solar_records = result if isinstance(result, list) else []
+            print(f"[SOLAR CRUD] Loaded {len(self.solar_records)} records", flush=True)
+        else:
+            print(f"[SOLAR CRUD] No records loaded, keeping empty list", flush=True)
+
+    def create_record(self, power_output, efficiency, temperature, status="active"):
+        """CREATE - Add new solar record"""
+        data = {
+            "id": str(uuid.uuid4()),
+            "user_id": self.user_id,
+            "power_output": float(power_output),
+            "efficiency": float(efficiency),
+            "temperature": float(temperature),
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "panel_count": self.total_panels,
+            "irradiance": self.irradiance,
+            "voltage": self.voltage,
+            "current": self.current,
+        }
+        print(f"[SOLAR CRUD] Creating record: {data}", flush=True)
+        result = self.api_call("POST", "/solar/records", data)
+        print(f"[SOLAR CRUD] Create result: {result}", flush=True)
+        if result:
+            self.solar_records.append(data)
+            return data["id"]
+        return None
+
+    def update_record(self, record_id, **kwargs):
+        """UPDATE - Modify solar record"""
+        data = kwargs
+        data["id"] = record_id
+        data["user_id"] = self.user_id
+        data["timestamp"] = datetime.now().isoformat()
+        print(f"[SOLAR CRUD] Updating record {record_id}: {data}", flush=True)
+        result = self.api_call("PUT", f"/solar/records/{record_id}", data)
+        print(f"[SOLAR CRUD] Update result: {result}", flush=True)
+        return result is not None
+
+    def delete_record(self, record_id):
+        """DELETE - Remove solar record"""
+        print(f"[SOLAR CRUD] Deleting record {record_id}", flush=True)
+        result = self.api_call("DELETE", f"/solar/records/{record_id}", None)
+        print(f"[SOLAR CRUD] Delete result: {result}", flush=True)
+        self.solar_records = [r for r in self.solar_records if r.get("id") != record_id]
+        return result is not None
     
     def generate_panel_data(self):
         self.panel_statuses = []
@@ -384,6 +478,15 @@ def SolarView(page: ft.Page):
     ref_eff_chart  = ft.Ref[ft.Image]()
     ref_scroll_col = ft.Ref[ft.Column]()
     ref_bottom_sheet= ft.Ref[ft.BottomSheet]()
+    
+    # ── CRUD Refs ─────────────────────────────────────────────────
+    crud_record_list = ft.Ref[ft.Column]()
+    crud_power_field = ft.Ref[ft.TextField]()
+    crud_eff_field = ft.Ref[ft.TextField]()
+    crud_temp_field = ft.Ref[ft.TextField]()
+    crud_status_msg = ft.Ref[ft.Text]()
+    crud_api_status = ft.Ref[ft.Text]()
+    crud_api_dot = ft.Ref[ft.Container]()
     
     # New refs for dynamic indicators
     ref_power_indicator = ft.Ref[ft.Container]()
@@ -1614,7 +1717,7 @@ def SolarView(page: ft.Page):
                     ref_indicator.current.content = ft.Icon(icon_down, color="white", size=18)
                 else:
                     ref_indicator.current.bgcolor = "#FF9F40"  # Orange for no change
-                    ref_indicator.current.content = ft.Icon(ft.Icons.MINUS, color="white", size=18)
+                    ref_indicator.current.content = ft.Icon(ft.Icons.REMOVE, color="white", size=18)
 
         # Update trend indicators with enhanced colors
         update_indicator(ref_power_indicator, solar_data.power_output, prev_values['power'])
