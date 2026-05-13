@@ -291,37 +291,6 @@ Renewable Energy/
 
 </div>
 
----
-
-## 🎨 Theme & Styling
-
-The application features a **dark professional theme** built around a custom design system:
-
-```python
-# Core palette
-PRIMARY   = "#00C896"   # Vibrant teal-green
-SECONDARY = "#0EA5E9"   # Sky blue
-ACCENT    = "#F59E0B"   # Amber gold
-
-# Backgrounds
-BG_DARK    = "#040d1a"  # Deep navy
-BG_CARD    = "#080f1e"  # Card surface
-BG_SIDEBAR = "#040d1a"  # Navigation
-
-# Text
-TEXT_PRIMARY   = "#F9FAFB"  # Near white
-TEXT_SECONDARY = "#9CA3AF"  # Cool gray
-TEXT_MUTED     = "#4B5563"  # Dimmed
-
-# Semantic
-SUCCESS = "#10B981"  # Green
-WARNING = "#F59E0B"  # Amber
-ERROR   = "#EF4444"  # Red
-INFO    = "#3B82F6"  # Blue
-```
-
----
-
 ## 🧪 Testing
 
 ```bash
@@ -333,35 +302,3 @@ python comprehensive_api_server.py
 python test_api_system.py
 ```
 
----
-
-## 📸 Screenshots
-
-| Dashboard | Solar Analytics |
-|-----------|----------------|
-| <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/dashboard.png" width="400"/> | <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/solar.png" width="400"/> |
-
-| Wind Analytics | Battery Management |
-|----------------|-------------------|
-| <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/wind.png" width="400"/> | <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/battery.png" width="400"/> |
-
-| AI Predictions | Analytics CRUD |
-|----------------|----------------|
-| <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/predictions.png" width="400"/> | <img src="https://raw.githubusercontent.com/sabinakarimli/Renewable-Energy/main/assets/screenshots/analytics.png" width="400"/> |
-
----
-
-## 📄 License
-
-This project is developed for educational and demonstration purposes.
-
----
-
-<div align="center">
-  <br/>
-  <sub>Built with ❤️ by <a href="https://github.com/sabinakarimli">Sabina Karimli</a></sub>
-  <br/><br/>
-  <img src="https://img.shields.io/badge/⭐_Star_this_repo-00C896?style=for-the-badge&logo=github&logoColor=white"/>
-  <br/><br/>
-  <img src="https://profile-counter.glitch.me/sabinakarimli-Renewable-Energy/count.svg" alt="Visitor Count"/>
-</div>
