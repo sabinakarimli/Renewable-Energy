@@ -745,12 +745,69 @@ def get_energy_summary(user_id: str = Query(...)):
     }
 
 # ===== SOLAR RECORDS ENDPOINTS (20 endpoints) =====
+SOLAR_ALLOWED_SORT = {
+    "id",
+    "panel_id",
+    "power_output",
+    "efficiency",
+    "temperature",
+    "irradiance",
+    "status",
+    "timestamp",
+    "panel_type",
+    "orientation",
+}
+
 @app.get("/solar/records", tags=["Solar Records"])
-def get_solar_records(user_id: str = Query(...), limit: int = Query(100, ge=1, le=1000)):
+def get_solar_records(
+    user_id: str = Query(...),
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("timestamp"),
+    order: str = Query("desc"),
+):
+    if sort_by not in SOLAR_ALLOWED_SORT:
+        sort_by = "timestamp"
+    if order not in ("asc", "desc"):
+        order = "desc"
+
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM solar_records WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?", (user_id, limit)).fetchall()
+    where = "WHERE user_id = ?"
+    args = [user_id]
+
+    if search:
+        like = f"%{search.strip()}%"
+        where += """
+            AND (
+                id LIKE ? OR panel_id LIKE ? OR status LIKE ? OR panel_type LIKE ?
+                OR orientation LIKE ? OR timestamp LIKE ?
+            )
+        """
+        args.extend([like, like, like, like, like, like])
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM solar_records {where}",
+        tuple(args),
+    ).fetchone()[0]
+
+    rows = conn.execute(
+        f"""
+        SELECT * FROM solar_records
+        {where}
+        ORDER BY {sort_by} {order}
+        LIMIT ? OFFSET ?
+        """,
+        tuple(args + [limit, offset]),
+    ).fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [dict(row) for row in rows],
+    }
 
 @app.get("/solar/records/{record_id}", tags=["Solar Records"])
 def get_solar_record(record_id: str):

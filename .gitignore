@@ -27,6 +27,11 @@ Desktop.ini
 # Flet
 /assets/images/
 
+# Local app artifacts
+.sixth/
+.uploads/
+exports/
+
 # Database
 *.db-journal
 *.db-shm
