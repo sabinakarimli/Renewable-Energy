@@ -3,10 +3,17 @@ import csv
 import flet as ft
 import os
 import random
+import sys
 import threading
 import base64
 import math
 from datetime import datetime
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from assets.styles import *
 from database.db import insert_energy_data, get_latest_energy, get_energy_history
 
@@ -1553,3 +1560,12 @@ def DashboardView(page: ft.Page, user_data: dict = None):
         bgcolor=BG_DARK,
         content=body,
     )
+
+
+if __name__ == "__main__":
+    def main(page: ft.Page):
+        page.title = "Dashboard Preview"
+        page.bgcolor = "#040d1a"
+        page.add(DashboardView(page))
+
+    ft.run(main)
